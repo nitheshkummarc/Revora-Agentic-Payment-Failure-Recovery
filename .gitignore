@@ -19,3 +19,11 @@ CLAUDE.md
 secrets.json
 .anthropic/
 .claude/settings.local.json
+
+# Frontend build artefacts.
+frontend/node_modules/
+frontend/dist/
+# Synced copy of data/batch_results.json -- produced by `npm run sync-data`,
+# never edited by hand. One source of truth for the run.
+frontend/public/batch_results.json
+frontend/tsconfig.tsbuildinfo
