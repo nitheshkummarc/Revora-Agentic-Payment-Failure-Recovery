@@ -591,3 +591,45 @@ def test_end_to_end_duplicate_delivery_does_not_create_a_false_gap():
     assert result.missing_sequences == []
     assert result.chain_completeness == 1.0
     assert result.ambiguous is False
+
+
+def test_single_ignored_event_lands_exactly_on_the_confidence_threshold(resolver, tracer):
+    """Boundary pin: n=1 sits exactly on CONFIDENCE_AMBIGUITY_THRESHOLD.
+
+    n=1 sits exactly on CONFIDENCE_AMBIGUITY_THRESHOLD -- safety currently
+    comes from the structural rule alone at this point, not the confidence
+    check; if PENALTY_ILLEGAL_TRANSITION or this threshold ever changes,
+    re-verify this case.
+
+    The arithmetic: Module 2 deducts PENALTY_ILLEGAL_TRANSITION (0.25) for the
+    one ignored event, giving inherited = 0.75. Module 3 then computes
+    1.0 * 1.0 * 0.75 - PENALTY_PER_IGNORED_EVENT (0.15) = 0.60 exactly. Since
+    the gate is `confidence < threshold`, 0.60 < 0.60 is False, so
+    `confidence_below_threshold` does NOT fire -- the verdict rests entirely on
+    `events_ignored_during_resolution`.
+    """
+    events = [
+        make_event(WebhookEventName.PAYMENT_FAILED, sequence=1, occurred_offset=5, error=OTP_ERROR),
+        # A capture with no preceding authorization: unreachable, so Module 2
+        # ignores exactly one event.
+        make_event(WebhookEventName.PAYMENT_CAPTURED, sequence=2, occurred_offset=9),
+    ]
+    result = resolve_and_trace(resolver, tracer, events)
+
+    assert len(result.ignored_event_ids) == 1
+    assert result.inherited_resolution_confidence == pytest.approx(0.75)
+    assert result.chain_completeness == 1.0
+    assert result.error_grounding == 1.0
+
+    # Exactly on the boundary, not below it.
+    assert result.confidence == pytest.approx(CONFIDENCE_AMBIGUITY_THRESHOLD)
+    assert not (result.confidence < CONFIDENCE_AMBIGUITY_THRESHOLD)
+
+    # Ambiguous, but NOT because of the confidence check.
+    assert result.ambiguous is True
+    assert not any(
+        r.startswith("confidence_below_threshold") for r in result.ambiguity_reasons
+    ), "the confidence gate must not be what is protecting this case"
+    assert any(
+        r.startswith("events_ignored_during_resolution") for r in result.ambiguity_reasons
+    ), "the structural rule is the only thing protecting this case"
