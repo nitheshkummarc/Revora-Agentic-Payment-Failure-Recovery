@@ -41,7 +41,7 @@ ever reaches the gateway through the PolicyEngine.
 | Module | Component | Status |
 |---|---|---|
 | 1 | MockPaymentGateway + ChaosInjector | Built |
-| 2 | StateMachine / StateResolver | Not started |
+| 2 | StateMachine / StateResolver | Built |
 | 3 | FailurePropagationTracer | Not started |
 | 4 | Intelligence Layer | Not started |
 | 5 | PolicyEngine | Not started |
