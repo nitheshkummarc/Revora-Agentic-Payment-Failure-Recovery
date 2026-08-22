@@ -83,22 +83,74 @@ Two boundaries are enforced structurally rather than by convention:
 | State resolver | Built | 28 |
 | Failure propagation tracer | Built | 22 |
 | Recommendation layer | Built | 43 |
-| Policy engine | Built | 50 |
+| Policy engine | Built | 64 |
 | Orchestrator + verify | Built | 17 |
-| Synthetic dataset generator | Not started | — |
-| Dashboard | Not started | — |
+| Synthetic dataset generator | Built | 53 |
+| X-Ray dashboard | Built | 64 |
+
+253 backend tests, 64 frontend tests.
 
 ## Running
 
+### Backend
+
 ```bash
 pip install -r backend/requirements.txt
-uvicorn app.main:app --reload --app-dir backend
-pytest
+python -m pytest -q                                # 253 tests
+uvicorn app.main:app --reload --app-dir backend    # http://localhost:8000
 ```
 
 Set `ANTHROPIC_API_KEY` to enable live recommendation calls. Without it the
 recommendation layer runs against a deterministic stub, and every other layer
 is unaffected.
+
+### Generating a batch run
+
+The dashboard renders a completed batch run, so one has to exist first. On a
+fresh clone `data/batch_results.json` is committed, but regenerating it is a
+single command:
+
+```bash
+python data/generate_synthetic_dataset.py    # 500 events -> data/synthetic_events_500.json
+python data/run_batch.py                     # replay -> data/batch_results.json
+```
+
+### Dashboard
+
+```bash
+cd frontend
+npm install
+npm run sync-data     # REQUIRED before the dashboard can render
+npm run dev           # http://localhost:5173
+```
+
+**`npm run sync-data` is required on a fresh clone.** It copies
+`data/batch_results.json` into `frontend/public/`, which is where the dashboard
+reads it from when no run id is supplied. That copy is deliberately
+gitignored — one source of truth for a run, rather than two files free to drift
+apart — so a fresh clone has no `frontend/public/batch_results.json` until this
+runs, and the page will show a load error instead of a dashboard.
+
+`npm run dev`, `npm run build` and `npm test` all run it automatically as a
+pre-step; the only time it needs running by hand is before serving a build
+directly (`npx vite preview`) or when `data/batch_results.json` has been
+regenerated while the dev server is already up.
+
+Two ways to load a run:
+
+| URL | Source |
+|---|---|
+| `http://localhost:5173/` | the synced snapshot |
+| `http://localhost:5173/?run=<batch_run_id>` | `GET /api/batch-results/<id>`, live from the backend |
+
+The header states which of the two it used.
+
+### Frontend tests
+
+```bash
+npm test              # 64 offline tests, no servers needed
+npm run test:live     # end-to-end; needs backend on :8000 and a served dashboard
+```
 
 ## Scope
 
