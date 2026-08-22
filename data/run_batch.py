@@ -215,19 +215,26 @@ def report(results: BatchResults, dataset: Dict[str, Any]) -> None:
     blocked_paise = by_outcome.get(EventOutcome.BLOCKED.value, 0)
 
     print()
-    print("Money (all figures in paise internally; shown in rupees):")
+    print("Money moved through verified-safe paths")
+    print("(paise internally, shown in rupees; not a claim about retry success):")
     print(f"  batch value            {_rupees(total_paise):>18}")
     print(f"  never at risk          {_rupees(no_action_paise):>18}  (resolved without action)")
     print(f"  addressable at risk    {_rupees(addressable):>18}")
-    print(f"  recovered              {_rupees(recovered_paise):>18}")
-    print(f"  blocked by policy      {_rupees(blocked_paise):>18}")
+    print(f"  settled via retry      {_rupees(recovered_paise):>18}")
+    print(f"  preserved by policy    {_rupees(blocked_paise):>18}")
     for label, outcome in (
         ("escalated", EventOutcome.ESCALATED),
         ("needs review", EventOutcome.NEEDS_REVIEW),
     ):
         print(f"  {label:<22} {_rupees(by_outcome.get(outcome.value, 0)):>18}")
     if addressable:
-        print(f"  recovery rate          {recovered_paise / addressable:>17.1%}  (of addressable value)")
+        # Deliberately not called a recovery rate. In the mock gateway a retry
+        # always succeeds, so this measures whether each payment reached its
+        # correct decision, not how often a real retry would land.
+        print(
+            f"  correctly routed rate  {recovered_paise / addressable:>17.1%}"
+            "  (of addressable value)"
+        )
 
     print()
     print("Outcome by bucket:")
