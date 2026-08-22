@@ -1,10 +1,9 @@
-"""Schemas for the PolicyEngine (Module 5).
+"""Schemas for policy validation.
 
-`EventContext` types every RBI field as Optional. That is deliberate: "missing"
-has to be representable, because GROUND_TRUTH.md Day 6-7 requires a missing
-field to fail closed. A non-optional field with a default would silently
-manufacture a passing value for an event that never carried one -- which is
-exactly the "compliance gap invisible until judged" failure mode.
+`EventContext` types every compliance field as Optional. That is deliberate:
+absence has to be representable so it can fail closed. A non-optional field
+with a default would silently manufacture a passing value for an event that
+never carried one, which is how a compliance gap stays invisible.
 """
 
 from __future__ import annotations
@@ -24,11 +23,10 @@ class StrictModel(BaseModel):
 class EventContext(StrictModel):
     """The compliance facts about one payment.
 
-    Money fields are in PAISE, matching Razorpay's integer-paise convention and
-    the `amount` field the Days 11-13 dataset spec requires. `mandate_ceiling`
-    is paise for the same reason -- GROUND_TRUTH.md does not state its unit, and
-    making it consistent with `amount` is the only choice that avoids a
-    silent rupee/paise comparison inside the ceiling check.
+    Money fields are in paise, matching Razorpay's integer-paise convention.
+    `mandate_ceiling` is paise for the same reason: keeping it consistent with
+    `amount` is the only choice that avoids a silent rupee/paise comparison
+    inside the ceiling check.
     """
 
     payment_id: str
@@ -47,13 +45,12 @@ class EventContext(StrictModel):
     retry_count: int = Field(
         default=0,
         ge=0,
-        description="Recovery attempts already made (Module 1's failed_charge_attempts)",
+        description="Recovery attempts already made for this payment",
     )
     discount_amount: int = Field(default=0, ge=0, description="Proposed discount in paise")
 
-    # Module 3's tracer confidence. It is NOT on the Intelligence Layer's
-    # output, and Module 5 may not modify intelligence/, so the Orchestrator
-    # supplies it here. Optional: when it is not supplied the defence-in-depth
+    # The tracer's confidence. It is not carried on the recommendation, so the
+    # orchestrator supplies it here. Optional: when absent, the defence-in-depth
     # confidence rule records itself as skipped rather than silently passing.
     trace_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
@@ -61,8 +58,8 @@ class EventContext(StrictModel):
 
 
 class RuleEvaluation(StrictModel):
-    """One rule's result, recorded whether it passed or failed, so the audit
-    trail shows what was checked -- not only what tripped."""
+    """One rule's result, recorded whether it passed or failed, so an audit
+    shows everything that was checked and not only what tripped."""
 
     rule_id: str
     passed: bool
@@ -70,11 +67,10 @@ class RuleEvaluation(StrictModel):
 
 
 class PolicyDecision(StrictModel):
-    """The PolicyEngine's verdict.
+    """The policy verdict.
 
-    The three fields the Module 5 prompt specifies are `approved`,
-    `blocked_reason` and `final_action`. Everything else is audit detail for
-    the X-Ray dashboard.
+    `approved`, `blocked_reason` and `final_action` are the contract; everything
+    else is audit detail for the dashboard.
     """
 
     payment_id: str

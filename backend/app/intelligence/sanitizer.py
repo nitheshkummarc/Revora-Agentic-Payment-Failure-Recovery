@@ -1,10 +1,9 @@
-"""Sanitizer for untrusted customer free-text (Module 4).
+"""Sanitiser for untrusted customer free-text.
 
-GROUND_TRUTH.md Day 5-6 names direct/indirect prompt injection as OWASP's #1
-LLM agentic risk, with the mitigation being a strict boundary before anything
-customer-supplied reaches the prompt. This module is that boundary: a real,
-callable step with concrete rules, not a prompt instruction or a vague
-"sanitize" comment.
+Direct and indirect prompt injection is the primary risk when customer-supplied
+text reaches a model prompt, so everything crosses this boundary first. It is a
+real, callable step with concrete rules rather than a prompt instruction or a
+vague "sanitise" comment.
 
 Three concrete rules, in order:
 
@@ -38,11 +37,11 @@ from typing import List, Optional, Tuple
 
 from app.intelligence.schemas import SanitizationReport
 
-#: Hard cap from the Module 4 prompt.
+#: Hard cap on note length, applied after control characters are stripped.
 MAX_NOTE_LENGTH = 500
 
 #: The delimiter the prompt builder wraps untrusted content in. Defined here so
-#: the sanitizer and the prompt builder cannot drift apart.
+#: the sanitiser and the prompt builder cannot drift apart.
 UNTRUSTED_BLOCK_TAG = "untrusted_customer_data"
 
 #: Whitespace that is a control character but carries real meaning in a note.

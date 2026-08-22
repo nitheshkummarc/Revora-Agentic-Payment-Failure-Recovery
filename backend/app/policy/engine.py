@@ -1,4 +1,4 @@
-"""PolicyEngine (Module 5) -- deterministic guardrails, including RBI fields.
+"""PolicyEngine -- deterministic guardrails, including RBI fields.
 
 Consumes the Intelligence Layer's output and either approves it or blocks it
 with a reason that names the exact rule that fired. Fully deterministic: no LLM
@@ -7,13 +7,12 @@ PolicyEngine only approves or blocks.
 
 Two design points worth knowing before reading the code:
 
-1. **Fail closed, and check for absence before checking values.** A missing RBI
-   field is evaluated before any comparison that would use it, so an absent
-   field can never be read as a passing value. GROUND_TRUTH.md Day 6-7 calls
-   this "the single most defensible line in your pitch versus a generic dunning
-   bot", and it only holds if absence is checked first.
+1. Fail closed, and check for absence before checking values. A missing
+   compliance field is evaluated before any comparison that would use it, so an
+   absent field can never be read as a passing value. This only holds because
+   absence is checked first.
 
-2. **Only debiting actions are gated on the RBI fields.** RETRY_SOFT re-attempts
+2. Only debiting actions are gated on the compliance fields. RETRY_SOFT re-attempts
    a customer's payment; REQUEST_VERIFICATION reads status, and ESCALATE_HUMAN /
    NO_ACTION_COOLDOWN stop. Requiring a pre-debit notice before an escalation
    would block the safe path and push events toward the unsafe one. The one
@@ -243,9 +242,9 @@ class PolicyEngine:
         """Every validate() call is logged -- approved or blocked -- with
         enough detail to reconstruct the decision for the audit trail.
 
-        The three things GROUND_TRUTH.md Day 6-7's deliverable requires to be
-        visible together are all here: the LLM recommendation, the block, and
-        the reason string.
+        The recommendation, the block and the reason string are all recorded
+        together, so a reviewer can see what was proposed and why it was
+        rejected without correlating separate log lines.
         """
         log_event(
             logger,

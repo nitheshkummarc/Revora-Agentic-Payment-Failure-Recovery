@@ -1,22 +1,19 @@
-"""PolicyEngine rule set (Module 5).
+"""Policy rule set, including the RBI e-mandate compliance checks.
 
-Every constant below is transcribed from GROUND_TRUTH.md's Day 6-7 code block.
-They are not example values -- they are the rules. Where GROUND_TRUTH.md does
-not supply a number, that is stated in the comment rather than filled in with a
-plausible-looking one.
+The constants below are the rules themselves, not illustrative values. Where no
+authoritative figure exists for something, the comment says so rather than
+filling the gap with a plausible-looking number.
 
-**Units.** GROUND_TRUTH.md states the money rules in rupees (MAX_DISCOUNT = 500
-Rs, AFA_REQUIRED_ABOVE = 15000 Rs) but the dataset carries `amount` in paise,
-Razorpay's integer-paise convention (Days 11-13: "50000 = Rs.500"). Mixing the
-two silently would be a compliance bug, not just an arithmetic one, so the
-rupee figures are kept verbatim below and every comparison is done in paise via
-an explicit derived constant. Nothing in this module compares a rupee value to
-a paise value.
+Units. The regulatory limits are expressed in rupees (MAX_DISCOUNT = 500,
+AFA_REQUIRED_ABOVE = 15000) while payment amounts arrive in paise, Razorpay's
+integer-paise convention where 50000 means Rs.500. Mixing the two silently
+would be a compliance bug rather than merely an arithmetic one, so the rupee
+figures are kept as written and every comparison runs through an explicit
+derived paise constant. Nothing here compares a rupee value to a paise value.
 
-**Citation discipline.** Decisions cite the circular NUMBER
-(RBI/DPSS/2026-27/396) and never a section number. GROUND_TRUTH.md's Appendix
-warns that judges may check claimed section numbers against the real circular,
-and the section numbers are not in GROUND_TRUTH.md -- so they are not claimed.
+Citation discipline. Decisions cite the circular number
+(RBI/DPSS/2026-27/396) and never a section number. Section numbers are not
+verified against the source text, so none are claimed.
 """
 
 from __future__ import annotations
@@ -28,7 +25,7 @@ from typing import Optional
 from app.intelligence.schemas import RecommendedAction
 
 # --------------------------------------------------------------------------
-# GROUND_TRUTH.md Day 6-7 rule set, verbatim
+# Regulatory and dunning limits
 # --------------------------------------------------------------------------
 MAX_RETRIES = 3  # matches Razorpay's own subscription-halt threshold
 MAX_DISCOUNT = 500  # Rs
@@ -39,41 +36,36 @@ COOLDOWN_AFTER_OPT_OUT = "permanent"  # opted-out customers -- hard block, no ov
 
 # --------------------------------------------------------------------------
 # Derived paise constants. Comparisons use these; the rupee figures above stay
-# untouched so they remain greppable against GROUND_TRUTH.md.
+# untouched so they remain greppable against the specification.
 # --------------------------------------------------------------------------
 PAISE_PER_RUPEE = 100
 MAX_DISCOUNT_PAISE = MAX_DISCOUNT * PAISE_PER_RUPEE  # 50_000 paise
 AFA_REQUIRED_ABOVE_PAISE = AFA_REQUIRED_ABOVE * PAISE_PER_RUPEE  # 1_500_000 paise
 
 # --------------------------------------------------------------------------
-# Documented but NOT enforced.
+# Recorded but NOT enforced.
 #
-# GROUND_TRUTH.md's Appendix records the circular's AFA thresholds as
-# "Rs.15,000 general / Rs.1 lakh for SIPs and insurance". Only the general
-# threshold is in the Day 6-7 rule block, and applying the higher one would
-# require a mandate-category field that the Days 11-13 dataset spec does not
-# define. Rather than invent that field, the higher threshold is recorded here
-# for the pitch deck and left unenforced. Do not claim the code enforces it.
+# The circular sets AFA thresholds of Rs.15,000 generally and Rs.1 lakh for
+# SIPs and insurance. Only the general threshold is enforced: applying the
+# higher one requires a mandate-category field that events do not yet carry.
+# The value is recorded here so the distinction is visible, but no code path
+# consults it. Do not describe it as enforced.
 # --------------------------------------------------------------------------
 AFA_REQUIRED_ABOVE_SIP_INSURANCE = 100000  # Rs 1 lakh -- documented, not enforced
 
 # --------------------------------------------------------------------------
-# NOT from GROUND_TRUTH.md's rule block. Sourced from its Day 3-4 mitigation
-# table, which assigns this rule to the PolicyEngine explicitly: "PolicyEngine
-# hard-rejects any recovery action where confidence < threshold and routes to
-# 'needs human/status-check'". GROUND_TRUTH.md does not state the threshold, so
-# this number is a RecoverX design choice -- do not present it as an RBI or
-# Razorpay figure.
+# Minimum tracer confidence required to act autonomously. A local design
+# choice with no regulatory basis; do not describe it as an RBI or Razorpay
+# figure.
 #
-# Redundant by construction today (Module 3 already marks anything below 0.60
-# as ambiguous, and Module 4 short-circuits ambiguous traces to a non-debiting
-# action). It is kept as defence-in-depth against exactly the "set-and-forget
-# drift" failure mode GROUND_TRUTH.md Day 6-7 warns about: if a later change to
-# Module 3 lets a low-confidence trace through, this still catches it.
+# Redundant by construction today: the tracer already marks anything below 0.60
+# ambiguous, and the recommendation layer short-circuits ambiguous traces to a
+# non-debiting action. It is retained as defence-in-depth against rule drift --
+# if a later change lets a low-confidence trace through, this still catches it.
 # --------------------------------------------------------------------------
 MINIMUM_TRACE_CONFIDENCE = 0.60
 
-#: The circular GROUND_TRUTH.md's Appendix names as primary source. Number
+#: The circular the specification's Appendix names as primary source. Number
 #: only -- never a section number.
 RBI_CIRCULAR = "RBI/DPSS/2026-27/396"
 
@@ -191,7 +183,7 @@ def check_required_rbi_fields(
 ) -> Optional[Violation]:
     """Fail closed: a missing RBI field is a block, never a pass-through.
 
-    GROUND_TRUTH.md Day 6-7: "Every recovery action must fail closed (block,
+    "Every recovery action must fail closed (block,
     not act) if any RBI-required field is missing or unmet." Missing is checked
     before any value comparison, so an absent field can never be read as a
     passing value.

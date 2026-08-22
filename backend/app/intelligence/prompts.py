@@ -1,14 +1,14 @@
-"""Prompt construction for the Intelligence Layer (Module 4).
+"""Prompt construction for the recommendation layer.
 
-The single rule this module exists to enforce: customer-supplied text is NEVER
-concatenated into the instruction portion of the prompt. The system prompt is a
-frozen constant with no interpolation slots at all -- there is no `.format()`,
-no f-string, no `%` on it, so there is structurally nowhere for a note to land.
-The note goes into a clearly delimited block inside the USER message, and the
-system prompt tells the model that block is data.
+One rule governs this module: customer-supplied text is never concatenated into
+the instruction portion of the prompt. The system prompt is a frozen constant
+with no interpolation slots -- no `.format()`, no f-string, no `%` -- so there
+is structurally nowhere for a note to land. The note goes into a clearly
+delimited block inside the user message, and the system prompt tells the model
+that block is data.
 
-Also enforced here: the model only ever sees the tracer's structured output.
-No raw gateway events, no webhook payloads, no error logs.
+Also enforced here: the model sees only the tracer's structured output. No raw
+gateway events, no webhook payloads, no error logs.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from app.intelligence.sanitizer import UNTRUSTED_BLOCK_TAG
 from app.tracer.schemas import TraceResult
 
 #: Frozen. Contains no interpolation of any kind -- see module docstring.
-SYSTEM_PROMPT = """You are the recommendation stage of RecoverX, an automated \
+SYSTEM_PROMPT = """You are the recommendation stage of Revora, an automated \
 payment-recovery pipeline for Indian online payments.
 
 You will be given the output of a deterministic failure tracer for ONE failed \
@@ -64,10 +64,10 @@ amounts.
 def build_user_content(trace: TraceResult, untrusted_customer_note: str) -> str:
     """Build the user message.
 
-    Only the tracer's structured output goes in -- GROUND_TRUTH.md Day 5-6
-    makes "never raw event logs" a hard boundary. The sanitized note is placed
-    in its own delimited block, clearly labelled, and always last so there is
-    no instruction text after it for a payload to try to influence.
+    Only the tracer's structured output goes in; raw event logs never do. The
+    sanitised note is placed in its own delimited block, clearly labelled, and
+    always last, so there is no instruction text after it for a payload to try
+    to influence.
     """
     lines: List[str] = [
         "Tracer output for one failed payment:",

@@ -1,25 +1,23 @@
-"""LLM client and Intelligence Layer entry point (Module 4).
+"""Model client and recommendation-layer entry point.
 
 Two things live here:
 
-* `AnthropicLLMClient` -- a thin wrapper over the Anthropic Messages API using
-  the provider's native structured-output feature (`messages.parse` with a
-  Pydantic model), so valid JSON is guaranteed by the API rather than coaxed
-  out with a "please output JSON" instruction and a regex.
+* `AnthropicLLMClient`, a thin wrapper over the Anthropic Messages API using the
+  provider's structured-output feature (`messages.parse` with a Pydantic model),
+  so valid JSON is guaranteed by the API rather than coaxed out with a "please
+  output JSON" instruction and a regex.
 
-* `IntelligenceLayer` -- the module's public entry point. It sanitizes, decides
-  whether the LLM should be consulted at all, and applies the deterministic
-  safety guard on the way out.
+* `IntelligenceLayer`, the public entry point. It sanitises, decides whether the
+  model should be consulted at all, and applies the deterministic safety guard
+  on the way out.
 
-**Every call is fresh.** No conversation state is kept between events, ever.
-GROUND_TRUTH.md Day 5-6 flags context-window decay across a batch run as a real
-risk for exactly this kind of loop, so `recommend()` builds a brand-new
-single-message request each time and keeps no history attribute to accumulate
-into.
+Every call is fresh. No conversation state is kept between events: per-item
+accuracy degrades as context accumulates across a long batch run, so
+`recommend()` builds a new single-message request each time and keeps no history
+attribute to accumulate into.
 
-**This module never touches the gateway.** The LLM's output is a recommendation
-only; PolicyEngine (Module 5) and the Orchestrator (Module 6) are the only
-modules allowed to act on it.
+This module never touches the gateway. Its output is a recommendation only; the
+policy engine and orchestrator are the only components allowed to act on it.
 """
 
 from __future__ import annotations
@@ -41,7 +39,7 @@ from app.intelligence.schemas import (
 
 logger = get_logger("intelligence")
 
-#: Per the claude-api reference: current default model.
+#: Default model for recommendation calls.
 DEFAULT_MODEL = "claude-opus-5"
 DEFAULT_MAX_TOKENS = 2048
 
@@ -76,7 +74,7 @@ class AnthropicLLMClient:
             self._client = client
             return
         try:
-            import anthropic  # imported lazily: the rest of RecoverX runs without it
+            import anthropic  # imported lazily: the rest of Revora runs without it
         except ImportError as exc:  # pragma: no cover - depends on environment
             raise LLMUnavailableError(
                 "the `anthropic` package is not installed; install it or pass a "
@@ -141,7 +139,7 @@ class ExplodingLLMClient:
     def recommend(self, system_prompt: str, user_content: str) -> LLMRecommendation:
         raise AssertionError(
             "the LLM must not be consulted for an ambiguous trace -- "
-            "GROUND_TRUTH.md Day 3-4: never let the LLM guess in place of missing data"
+            "never let the LLM guess in place of missing data"
         )
 
 
@@ -164,18 +162,17 @@ class IntelligenceLayer:
         now = request.decided_at or self._clock()
 
         # ------------------------------------------------------------------
-        # 1. Sanitize FIRST, unconditionally.
-        #    This is context construction, not a branch of the decision: the
-        #    note is sanitized and injection-flagged even when the LLM is never
-        #    called, so the audit trail is complete either way.
+        # 1. Sanitise first, unconditionally. This is context construction
+        #    rather than a branch of the decision: the note is sanitised and
+        #    injection-flagged even when the model is never called, so the
+        #    audit trail is complete either way.
         # ------------------------------------------------------------------
         note, report = sanitize_customer_note(request.customer_note)
 
         # ------------------------------------------------------------------
-        # 2. Ambiguity short-circuit.
-        #    GROUND_TRUTH.md Day 3-4 / Module 4 prompt requirement 5: if the
-        #    tracer could not build a confident chain, the LLM is NOT asked to
-        #    guess in place of the missing data. No call is made at all.
+        # 2. Ambiguity short-circuit. If the tracer could not build a confident
+        #    chain, the model is not asked to guess in place of the missing
+        #    data. No call is made at all.
         # ------------------------------------------------------------------
         if request.trace.ambiguous:
             decision = IntelligenceDecision(
@@ -200,7 +197,7 @@ class IntelligenceLayer:
             return decision
 
         # ------------------------------------------------------------------
-        # 3. Consult the LLM. Fresh call, tracer output only, note delimited.
+        # 3. Consult the model. Fresh call, tracer output only, note delimited.
         # ------------------------------------------------------------------
         if self._client is None:
             return self._fail_safe(
@@ -222,11 +219,10 @@ class IntelligenceLayer:
             )
 
         # ------------------------------------------------------------------
-        # 4. Deterministic safety guard.
-        #    The delimited-block prompt design is the primary defence against
-        #    injection; this is the second layer that does not depend on the
-        #    model having obeyed it. If the note looked like an instruction,
-        #    the recommendation is not allowed to move money.
+        # 4. Deterministic safety guard. The delimited-block prompt design is
+        #    the primary defence against injection; this is a second layer that
+        #    does not depend on the model having obeyed it. A note that looked
+        #    like an instruction cannot produce a money-moving recommendation.
         # ------------------------------------------------------------------
         action = recommendation.recommended_action
         override_reason: Optional[str] = None
@@ -268,11 +264,11 @@ class IntelligenceLayer:
         *,
         reason: str,
     ) -> IntelligenceDecision:
-        """When the LLM cannot be consulted, escalate -- never guess.
+        """When the model cannot be consulted, escalate rather than guess.
 
-        GROUND_TRUTH.md Day 5-6's bar is that an adversarial or broken input
-        produces a rejected action or ESCALATE_HUMAN, never a silently-executed
-        unsafe one. A failed LLM call is exactly that situation.
+        An adversarial or broken input must produce a rejected action or an
+        escalation, never a silently executed unsafe one. A failed call is
+        exactly that situation.
         """
         decision = IntelligenceDecision(
             payment_id=request.payment_id,
@@ -307,7 +303,6 @@ class IntelligenceLayer:
         )
 
 
-#: Actions that are never safe to emit from a poisoned input.
 __all__ = [
     "AnthropicLLMClient",
     "ExplodingLLMClient",
