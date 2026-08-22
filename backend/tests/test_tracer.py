@@ -186,7 +186,7 @@ def test_root_cause_uses_the_bank_source_verbatim_too(resolver, tracer):
         description="Payment failed",
         field=None,
         source=ErrorSource.BANK,
-        step="payment_authorization",
+        step="payment_authentication",
         reason="insufficient_funds",
     )
     events = [
@@ -194,7 +194,7 @@ def test_root_cause_uses_the_bank_source_verbatim_too(resolver, tracer):
     ]
     result = resolve_and_trace(resolver, tracer, events)
     assert result.root_cause == (
-        "Failure at step: payment_authorization, source: bank, reason: insufficient_funds"
+        "Failure at step: payment_authentication, source: bank, reason: insufficient_funds"
     )
     assert result.grounded_error is not None
     assert result.grounded_error.reason == "insufficient_funds"
