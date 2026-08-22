@@ -1,10 +1,8 @@
-"""Module 4 tests -- Intelligence Layer.
+"""Recommendation layer tests.
 
-The Module 4 prompt requires at least 2 explicit prompt-injection cases that
-must not produce an unsafe recommended_action. There are more than 2 here, and
-GROUND_TRUTH.md Day 5-6's own deliverable bar -- "10 known adversarial inputs
-(including at least 2 prompt-injection attempts) all produce either a rejected
-action or ESCALATE_HUMAN" -- is exercised as a parametrised sweep.
+The bar is that ten known adversarial inputs, including several prompt-injection
+attempts, all produce either a rejected action or an escalation -- never a
+silently executed unsafe one. That is exercised as a parametrised sweep.
 
 The ambiguity short-circuit is proven with a client that RAISES if called, so
 the test fails loudly if the LLM is ever consulted, rather than only checking a
@@ -96,9 +94,9 @@ def make_input(
 
 
 # --------------------------------------------------------------------------
-# Ground-truth conformance
+# Documented-value conformance
 # --------------------------------------------------------------------------
-def test_action_enum_is_the_closed_set_from_ground_truth():
+def test_action_enum_is_the_documented_closed_set():
     assert {a.value for a in RecommendedAction} == {
         "RETRY_SOFT",
         "REQUEST_VERIFICATION",
@@ -133,7 +131,7 @@ def test_default_model_is_current():
 # Ambiguity short-circuit -- proven with a client that raises if called
 # --------------------------------------------------------------------------
 def test_ambiguous_trace_never_reaches_the_llm():
-    """Module 4 prompt requirement 5 / GROUND_TRUTH.md Day 3-4: the LLM is
+    """the LLM is
     never asked to guess in place of missing data."""
     layer = IntelligenceLayer(llm_client=ExplodingLLMClient())
     decision = layer.recommend(make_input(ambiguous=True))
@@ -289,7 +287,7 @@ def test_note_appears_only_inside_the_delimited_block():
 
 
 def test_user_content_carries_only_tracer_output_not_raw_events():
-    """GROUND_TRUTH.md Day 5-6: the LLM only ever sees the tracer's output."""
+    """the LLM only ever sees the tracer's output."""
     content = build_user_content(make_trace(), "")
     assert "root_cause" in content
     assert "causal_chain" in content
@@ -388,9 +386,8 @@ ADVERSARIAL_NOTES = [
 
 @pytest.mark.parametrize("note", ADVERSARIAL_NOTES)
 def test_ten_adversarial_inputs_never_produce_an_unsafe_action(note):
-    """GROUND_TRUTH.md Day 5-6 deliverable: 10 known adversarial inputs all
-    produce either a rejected action or ESCALATE_HUMAN, never a
-    silently-executed unsafe action.
+    """Ten known adversarial inputs must all produce either a rejected action
+    or ESCALATE_HUMAN, never a silently executed unsafe one.
 
     The stub is rigged to comply with every one of them, so any pass here is
     the deterministic guard doing the work, not a cooperative model.
@@ -428,8 +425,8 @@ def test_benign_note_is_not_downgraded():
 # No conversation state across events
 # --------------------------------------------------------------------------
 def test_each_event_gets_a_fresh_single_message_call():
-    """GROUND_TRUTH.md Day 5-6 flags context-window decay across a batch run.
-    Nothing from event N may appear in event N+1's request."""
+    """Per-item accuracy degrades as context accumulates across a batch run,
+    so nothing from event N may appear in event N+1's request."""
     stub = StubLLMClient()
     layer = IntelligenceLayer(llm_client=stub)
 

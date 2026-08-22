@@ -1,12 +1,12 @@
-"""Module 3 tests -- FailurePropagationTracer.
+"""Failure propagation tracer tests.
 
-The test the Module 3 prompt requires explicitly is
+The test the requires explicitly is
 `test_incomplete_chain_is_ambiguous_and_does_not_fabricate_a_root_cause`, plus
 its stronger sibling where the *failure event itself* is the missing one.
 
-Also pinned here: the two things Module 2 hands forward. A chain where events
-were ignored during resolution must NOT trace the same as a clean chain that
-happens to resolve to the same state.
+Also pinned here: what resolution hands forward. A chain where events were
+ignored during resolution must not trace the same as a clean chain that happens
+to resolve to the same state.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ class FakeClock:
         return self.t
 
 
-# GROUND_TRUTH.md Day 0's documented example error object, verbatim.
+# A documented Razorpay error object, reproduced verbatim.
 OTP_ERROR = ErrorObject(
     code="BAD_REQUEST_ERROR",
     description="Payment failed due to incorrect OTP",
@@ -108,7 +108,7 @@ def resolve_and_trace(
     payment_id: str = "pay_1",
     observed_offset: float = 120,
 ) -> TraceResult:
-    """Run the real Module 2 -> Module 3 pipeline."""
+    """Run the real resolve-then-trace pipeline."""
     resolution = resolver.resolve(
         events,
         payment_id=payment_id,
@@ -129,7 +129,7 @@ def resolve_and_trace(
 # Output contract
 # --------------------------------------------------------------------------
 def test_output_has_the_four_required_fields(resolver, tracer):
-    """GROUND_TRUTH.md Day 3-4 specifies the shape verbatim."""
+    """The output shape is a fixed contract."""
     events = [make_event(WebhookEventName.PAYMENT_FAILED, sequence=1, occurred_offset=5, error=OTP_ERROR)]
     result = resolve_and_trace(resolver, tracer, events)
     payload = result.model_dump(mode="json")
@@ -161,7 +161,7 @@ def test_tracer_refuses_to_diagnose_a_payment_that_did_not_fail(resolver, tracer
 # Root cause is quoted from the real error fields, never paraphrased
 # --------------------------------------------------------------------------
 def test_root_cause_quotes_source_step_and_reason_verbatim(resolver, tracer):
-    """Module 3 prompt requirement 2: literal values, not an LLM-style
+    """literal values, not an LLM-style
     paraphrase, so the cause stays greppable back to the real event."""
     events = [
         make_event(WebhookEventName.PAYMENT_FAILED, sequence=1, occurred_offset=5, error=OTP_ERROR)
@@ -179,7 +179,7 @@ def test_root_cause_quotes_source_step_and_reason_verbatim(resolver, tracer):
 
 
 def test_root_cause_uses_the_bank_source_verbatim_too(resolver, tracer):
-    """GROUND_TRUTH.md names `insufficient_funds` and source `bank` as real
+    """`insufficient_funds` and source `bank` are real
     values; the format must carry whatever the event actually holds."""
     bank_error = ErrorObject(
         code="BAD_REQUEST_ERROR",
@@ -260,9 +260,7 @@ def test_retry_delivery_attempts_are_distinct_causal_nodes(resolver, tracer):
 def test_incomplete_chain_is_ambiguous_and_does_not_fabricate_a_root_cause(
     resolver, tracer
 ):
-    """Module 3 prompt requirement 3 / GROUND_TRUTH.md Day 3-4.
-
-    The chain here has a hole: sequences 1 and 3 are present, 2 is gone
+    """The chain here has a hole: sequences 1 and 3 are present, 2 is gone
     (crash, log loss). Returning a shorter chain that looks complete is exactly
     the dropped-Spark-RCA mistake. The tracer must report the hole.
     """
@@ -345,7 +343,7 @@ def test_incomplete_error_triplet_is_ambiguous(resolver, tracer):
 
 
 # --------------------------------------------------------------------------
-# Module 2 continuity: an inconsistent chain must NOT trace like a clean one
+# Continuity: an inconsistent chain must not trace like a clean one
 # --------------------------------------------------------------------------
 def test_inconsistent_chain_traces_differently_from_a_clean_chain(resolver, tracer):
     """Both payments resolve to FAILED. One is clean; the other had an event
@@ -357,7 +355,7 @@ def test_inconsistent_chain_traces_differently_from_a_clean_chain(resolver, trac
     ]
     inconsistent = [
         make_event(WebhookEventName.PAYMENT_FAILED, sequence=1, occurred_offset=5, error=OTP_ERROR),
-        # A capture with no preceding authorization: unreachable, so Module 2
+        # A capture with no preceding authorization: unreachable, so resolution
         # ignores it -- evidence nobody has explained.
         make_event(WebhookEventName.PAYMENT_CAPTURED, sequence=2, occurred_offset=9),
     ]
@@ -472,7 +470,7 @@ def test_tracing_is_deterministic(resolver, tracer):
 
 
 # --------------------------------------------------------------------------
-# End-to-end against Module 1's real chaos injector
+# End-to-end against the real fault injector
 # --------------------------------------------------------------------------
 def _pipeline(chaos: ChaosConfig, advance: float, payment_id: str = "pay_e2e"):
     clock = FakeClock()
@@ -509,7 +507,7 @@ def test_end_to_end_genuine_failure_is_safe_to_act_on():
 
     assert result.ambiguous is False
     assert result.confidence == 1.0
-    # The gateway defaulted to GROUND_TRUTH.md's documented example error.
+    # The gateway fell back to its documented example error object.
     assert result.root_cause == (
         "Failure at step: payment_authentication, source: customer, reason: incorrect_otp"
     )
@@ -601,8 +599,8 @@ def test_single_ignored_event_lands_exactly_on_the_confidence_threshold(resolver
     check; if PENALTY_ILLEGAL_TRANSITION or this threshold ever changes,
     re-verify this case.
 
-    The arithmetic: Module 2 deducts PENALTY_ILLEGAL_TRANSITION (0.25) for the
-    one ignored event, giving inherited = 0.75. Module 3 then computes
+    The arithmetic: resolution deducts PENALTY_ILLEGAL_TRANSITION (0.25) for
+    the one ignored event, giving inherited = 0.75. The tracer then computes
     1.0 * 1.0 * 0.75 - PENALTY_PER_IGNORED_EVENT (0.15) = 0.60 exactly. Since
     the gate is `confidence < threshold`, 0.60 < 0.60 is False, so
     `confidence_below_threshold` does NOT fire -- the verdict rests entirely on
@@ -610,7 +608,7 @@ def test_single_ignored_event_lands_exactly_on_the_confidence_threshold(resolver
     """
     events = [
         make_event(WebhookEventName.PAYMENT_FAILED, sequence=1, occurred_offset=5, error=OTP_ERROR),
-        # A capture with no preceding authorization: unreachable, so Module 2
+        # A capture with no preceding authorization: unreachable, so resolution
         # ignores exactly one event.
         make_event(WebhookEventName.PAYMENT_CAPTURED, sequence=2, occurred_offset=9),
     ]

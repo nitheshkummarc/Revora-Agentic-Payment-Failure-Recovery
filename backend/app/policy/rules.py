@@ -36,7 +36,7 @@ COOLDOWN_AFTER_OPT_OUT = "permanent"  # opted-out customers -- hard block, no ov
 
 # --------------------------------------------------------------------------
 # Derived paise constants. Comparisons use these; the rupee figures above stay
-# untouched so they remain greppable against the specification.
+# untouched so they remain greppable against the published limits.
 # --------------------------------------------------------------------------
 PAISE_PER_RUPEE = 100
 MAX_DISCOUNT_PAISE = MAX_DISCOUNT * PAISE_PER_RUPEE  # 50_000 paise
@@ -65,8 +65,7 @@ AFA_REQUIRED_ABOVE_SIP_INSURANCE = 100000  # Rs 1 lakh -- documented, not enforc
 # --------------------------------------------------------------------------
 MINIMUM_TRACE_CONFIDENCE = 0.60
 
-#: The circular the specification's Appendix names as primary source. Number
-#: only -- never a section number.
+#: Primary regulatory source. Number only -- never a section number.
 RBI_CIRCULAR = "RBI/DPSS/2026-27/396"
 
 #: Actions that actually debit a customer or re-attempt their payment. Only

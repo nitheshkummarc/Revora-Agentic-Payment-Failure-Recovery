@@ -1,8 +1,7 @@
-"""Module 5 tests -- PolicyEngine.
+"""Policy engine tests.
 
-The Module 5 prompt requires one explicit test per rule, each proving the
-specific blocked_reason string is correct rather than merely that
-approved == False. The five named ones are:
+One explicit test per rule, each proving the specific blocked_reason string is
+correct rather than merely that approved == False. The five headline cases:
 
   * test_discount_exceeds_limit_is_blocked
   * test_mandate_ceiling_exceeded_is_blocked
@@ -10,8 +9,8 @@ approved == False. The five named ones are:
   * test_afa_required_and_missing_is_blocked
   * test_opted_out_is_a_permanent_hard_block
 
-GROUND_TRUTH.md Day 6-7 also asks this file to be treated as a regression
-suite, not a one-off demo script: re-run it after any PolicyEngine change.
+Treat this file as a regression suite rather than a one-off demo script: re-run
+it after any change to the rules.
 """
 
 from __future__ import annotations
@@ -84,9 +83,9 @@ def engine() -> PolicyEngine:
 
 
 # --------------------------------------------------------------------------
-# Ground-truth conformance: the constants ARE the rules
+# Documented-value conformance: the constants ARE the rules
 # --------------------------------------------------------------------------
-def test_rule_constants_match_ground_truth_verbatim():
+def test_rule_constants_are_the_documented_limits():
     assert R.MAX_RETRIES == 3
     assert R.MAX_DISCOUNT == 500
     assert R.MANDATE_CEILING_CHECK is True
@@ -104,17 +103,16 @@ def test_paise_conversion_is_explicit_and_correct():
 
 
 def test_rbi_circular_is_cited_by_number_only():
-    """GROUND_TRUTH.md's Appendix warns judges may check section numbers.
-    GROUND_TRUTH.md does not provide them, so none are claimed."""
+    """Section numbers are not verified against the source text, so none are
+    claimed -- only the circular number is cited."""
     assert R.RBI_CIRCULAR == "RBI/DPSS/2026-27/396"
     for rule_id in R.RuleId:
         assert "section" not in rule_id.value.lower()
 
 
 def test_sip_insurance_threshold_is_documented_but_not_enforced(engine):
-    """Rs.1 lakh appears in GROUND_TRUTH.md's Appendix but not in the Day 6-7
-    rule block, and enforcing it would need a mandate-category field the
-    dataset spec does not define."""
+    """The Rs.1 lakh SIP/insurance threshold is recorded but not enforced:
+    applying it needs a mandate-category field events do not yet carry."""
     assert R.AFA_REQUIRED_ABOVE_SIP_INSURANCE == 100000
     # A Rs.20,000 action is still blocked without AFA -- the general threshold
     # is what is enforced.
@@ -160,8 +158,7 @@ def test_every_rule_is_recorded_even_when_it_passes(engine):
 # REQUIRED RULE TEST 1 -- discount exceeds limit
 # --------------------------------------------------------------------------
 def test_discount_exceeds_limit_is_blocked(engine):
-    """GROUND_TRUTH.md's own demo example: the LLM recommends a Rs.5,000
-    discount when the cap is Rs.500."""
+    """The model recommends a Rs.5,000 discount when the cap is Rs.500."""
     decision = engine.validate(llm(), context(discount_amount=500_000))  # Rs.5,000
 
     assert decision.approved is False
@@ -427,8 +424,8 @@ def test_missing_mandate_ceiling_is_blocked(engine):
 
 
 def test_low_trace_confidence_is_blocked(engine):
-    """Day 3-4 mitigation: PolicyEngine hard-rejects a recovery action whose
-    tracer confidence is below the threshold."""
+    """A recovery action whose tracer confidence is below the threshold is
+    hard-rejected rather than acted on."""
     decision = engine.validate(llm(), context(trace_confidence=0.30))
     assert decision.approved is False
     assert decision.rule_id == "TRACE_CONFIDENCE_BELOW_THRESHOLD"
@@ -499,8 +496,7 @@ def test_missing_field_takes_precedence_over_a_value_violation(engine):
 # Audit trail
 # --------------------------------------------------------------------------
 def test_block_shows_recommendation_block_and_reason_together(engine):
-    """GROUND_TRUTH.md Day 6-7 deliverable: LLM recommendation -> PolicyEngine
-    block -> reason string, all three visible."""
+    """Recommendation, block and reason string must all be visible together."""
     decision = engine.validate(llm(), context(discount_amount=500_000))
     payload = decision.model_dump(mode="json")
 

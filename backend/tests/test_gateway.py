@@ -1,7 +1,7 @@
-"""Module 1 tests -- MockPaymentGateway.
+"""Mock payment gateway tests.
 
 Covers: the normal happy path, each chaos mode individually, and duplicate
-webhook idempotency, per the Module 1 prompt.
+webhook idempotency, per the
 
 Time is driven by an injectable FakeClock rather than real sleeps, so a
 documented 45-second webhook delay is exercised exactly as written without the
@@ -92,10 +92,10 @@ def _create(gateway: MockPaymentGateway, payment_id: str = "pay_test_1", amount:
 
 
 # --------------------------------------------------------------------------
-# Ground-truth conformance
+# Documented-value conformance
 # --------------------------------------------------------------------------
-def test_canonical_states_match_ground_truth():
-    """GROUND_TRUTH.md Day 1-2 lists exactly these five/six canonical states."""
+def test_canonical_states_are_the_documented_set():
+    """The canonical state list is fixed; drift here breaks every consumer."""
     assert {s.value for s in PaymentState} == {
         "CREATED",
         "AUTHORIZED",
@@ -106,8 +106,8 @@ def test_canonical_states_match_ground_truth():
     }
 
 
-def test_webhook_event_names_match_ground_truth():
-    """GROUND_TRUTH.md Day 0 -- "use these exact names"."""
+def test_webhook_event_names_are_the_documented_set():
+    """Event names must match what Razorpay actually emits, exactly."""
     assert {e.value for e in WebhookEventName} == {
         "payment.authorized",
         "payment.captured",
@@ -200,9 +200,9 @@ def test_reversed_state_via_refund(gateway: MockPaymentGateway):
     assert gateway.payments["pay_test_1"].state is PaymentState.REVERSED
 
 
-def test_fail_without_explicit_error_uses_ground_truth_example(gateway: MockPaymentGateway):
+def test_fail_without_explicit_error_uses_documented_example(gateway: MockPaymentGateway):
     """The gateway never invents an error code -- it falls back to the example
-    documented verbatim in GROUND_TRUTH.md Day 0."""
+    documented verbatim in """
     _create(gateway)
     status = gateway.fail_payment(FailPaymentRequest(payment_id="pay_test_1"))
     assert status.payment.state is PaymentState.FAILED
@@ -218,8 +218,7 @@ def test_fail_without_explicit_error_uses_ground_truth_example(gateway: MockPaym
 # Schema drift -- extra="forbid"
 # --------------------------------------------------------------------------
 def test_unknown_field_is_rejected_not_silently_accepted(client: TestClient):
-    """GROUND_TRUTH.md Day 1-2 failure mode "schema drift in tool calls":
-    a malformed-but-plausible payload must throw, not pass through."""
+    """A malformed-but-plausible payload must raise rather than pass through."""
     response = client.post(
         "/payments/create",
         json={"amount": 50000, "amount_in_rupees": 500},
@@ -248,7 +247,7 @@ def test_unknown_field_rejected_on_error_object(client: TestClient):
 
 
 def test_delay_outside_documented_window_is_rejected():
-    """GROUND_TRUTH.md documents a 0-45s delay window."""
+    """The documented delay window is 0-45s; anything outside it is rejected."""
     with pytest.raises(ValueError):
         ChaosConfig(modes=[ChaosMode.DELAYED_WEBHOOK], delay_seconds=60)
 
@@ -433,7 +432,7 @@ def test_out_of_order_delivery_does_not_walk_state_backwards(
 # Chaos mode 4: silent drop (webhook never fires)
 # --------------------------------------------------------------------------
 def test_chaos_silent_drop(gateway: MockPaymentGateway, clock: FakeClock):
-    """GROUND_TRUTH.md Day 0, documented behaviour 2: payment.failed does not
+    """payment.failed does not
     fire when the failure happens during authentication of a first attempt.
     Silence must be a signal, not an absence of one."""
     _create(gateway)
@@ -470,10 +469,10 @@ def test_chaos_silent_drop(gateway: MockPaymentGateway, clock: FakeClock):
 def test_chaos_failed_authorized_flip_appends_to_history(
     gateway: MockPaymentGateway, clock: FakeClock
 ):
-    """GROUND_TRUTH.md Day 0, documented behaviour 1.
+    """
 
-    Module 1 prompt requirement 3: the flip must APPEND to the per-payment_id
-    event history, not overwrite state in place -- Module 2's resolver needs
+    the flip must APPEND to the per-payment_id
+    event history rather than overwriting state in place. State resolution needs
     both the FAILED and the later AUTHORIZED entry, each timestamped.
     """
     _create(gateway)
@@ -515,8 +514,7 @@ def test_chaos_failed_authorized_flip_appends_to_history(
 # Subscriptions: PENDING -> HALTED after exactly 3 failed charge attempts
 # --------------------------------------------------------------------------
 def test_subscription_halts_after_three_failed_charges(gateway: MockPaymentGateway):
-    """GROUND_TRUTH.md Day 0 point 3 / Day 1-2: subscriptions move to halted
-    after exactly 3 charge-retry attempts."""
+    """Subscriptions move to halted after exactly three charge-retry attempts."""
     for attempt in (1, 2, 3):
         gateway.simulate_webhook(
             SimulateWebhookRequest(
