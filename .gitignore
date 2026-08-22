@@ -6,3 +6,16 @@ venv/
 node_modules/
 dist/
 .DS_Store
+
+# Local-only context file. Never commit.
+CLAUDE.md
+
+# Secrets -- never commit any of these.
+.env
+.env.*
+*.pem
+*.key
+*.p12
+secrets.json
+.anthropic/
+.claude/settings.local.json
