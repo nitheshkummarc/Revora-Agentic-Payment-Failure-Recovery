@@ -71,7 +71,13 @@ SETTLED_SUCCESS_STATES = frozenset({PaymentState.AUTHORIZED, PaymentState.CAPTUR
 
 #: Where the batch trace log is written so the dashboard can read it without a
 #: database and without losing it when the process restarts.
-DEFAULT_RESULTS_PATH = Path("data/batch_results.json")
+#: Anchored to the repository root rather than the process working directory.
+#: uvicorn is normally started from `backend/`, where a relative path would
+#: resolve to a `data/` directory that does not exist -- the endpoint would then
+#: return 404 for a run that is sitting on disk, and only when served rather
+#: than when tested.
+REPO_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_RESULTS_PATH = REPO_ROOT / "data" / "batch_results.json"
 
 
 class StrictModel(BaseModel):

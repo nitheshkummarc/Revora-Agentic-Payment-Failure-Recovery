@@ -3,9 +3,12 @@
 services:
   backend:
     image: python:3.11-slim
-    working_dir: /srv
+    working_dir: /srv/backend
+    # The whole repo, not just backend/: the batch-results endpoint falls back
+    # to reading data/batch_results.json, which lives beside backend/ rather
+    # than inside it.
     volumes:
-      - ./backend:/srv
+      - ./:/srv
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000"

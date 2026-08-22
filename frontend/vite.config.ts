@@ -21,5 +21,9 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./src/setupTests.ts"],
     css: false,
+    // Live checks need a running backend and a served dashboard, so they are
+    // not part of the standing suite. Run them with:
+    //   npx vitest run --dir src/__live__ --exclude ''
+    exclude: ["**/node_modules/**", "**/dist/**", "**/__live__/**"],
   },
 });
