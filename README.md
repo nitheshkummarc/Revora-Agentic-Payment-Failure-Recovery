@@ -44,7 +44,7 @@ ever reaches the gateway through the PolicyEngine.
 | 2 | StateMachine / StateResolver | Built |
 | 3 | FailurePropagationTracer | Built |
 | 4 | Intelligence Layer | Built |
-| 5 | PolicyEngine | Not started |
+| 5 | PolicyEngine | Built |
 | 6 | AgentOrchestrator | Not started |
 | 7 | Synthetic dataset generator | Not started |
 | 8 | X-Ray Dashboard | Not started |
