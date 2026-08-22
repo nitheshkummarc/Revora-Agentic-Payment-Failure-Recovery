@@ -115,6 +115,9 @@ class BatchEvent(StrictModel):
     pre_debit_notice_sent_at: Optional[datetime] = None
     mandate_ceiling: Optional[int] = Field(default=None, ge=0)
     afa_flag: Optional[bool] = None
+    # Selects which AFA threshold the policy engine applies. Optional, and an
+    # unrecognised value falls back to the general threshold.
+    mandate_category: Optional[str] = None
     opted_out: bool = False
     retry_count: int = Field(default=0, ge=0)
     discount_amount: int = Field(default=0, ge=0)
@@ -479,6 +482,7 @@ class AgentOrchestrator:
                     pre_debit_notice_sent_at=event.pre_debit_notice_sent_at,
                     mandate_ceiling=event.mandate_ceiling,
                     afa_flag=event.afa_flag,
+                    mandate_category=event.mandate_category,
                     opted_out=event.opted_out,
                     retry_count=event.retry_count,
                     discount_amount=event.discount_amount,

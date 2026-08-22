@@ -43,15 +43,35 @@ MAX_DISCOUNT_PAISE = MAX_DISCOUNT * PAISE_PER_RUPEE  # 50_000 paise
 AFA_REQUIRED_ABOVE_PAISE = AFA_REQUIRED_ABOVE * PAISE_PER_RUPEE  # 1_500_000 paise
 
 # --------------------------------------------------------------------------
-# Recorded but NOT enforced.
-#
 # The circular sets AFA thresholds of Rs.15,000 generally and Rs.1 lakh for
-# SIPs and insurance. Only the general threshold is enforced: applying the
-# higher one requires a mandate-category field that events do not yet carry.
-# The value is recorded here so the distinction is visible, but no code path
-# consults it. Do not describe it as enforced.
+# SIPs and insurance. Both are now enforced, against the mandate category the
+# event carries.
+#
+# The higher threshold is a relaxation, not a tightening: a SIP mandate between
+# Rs.15,000 and Rs.1 lakh needs no additional factor where a general mandate
+# for the same amount would. It is applied only when the event states a
+# category the circular names. An absent or unrecognised category falls back to
+# the general threshold, so an unknown value can only ever be stricter.
 # --------------------------------------------------------------------------
-AFA_REQUIRED_ABOVE_SIP_INSURANCE = 100000  # Rs 1 lakh -- documented, not enforced
+AFA_REQUIRED_ABOVE_SIP_INSURANCE = 100000  # Rs 1 lakh
+AFA_REQUIRED_ABOVE_SIP_INSURANCE_PAISE = (
+    AFA_REQUIRED_ABOVE_SIP_INSURANCE * PAISE_PER_RUPEE
+)  # 10_000_000 paise
+
+#: Mandate categories the circular's higher threshold applies to. Anything else
+#: -- including no category at all -- uses the general threshold.
+SIP_INSURANCE_MANDATE_CATEGORIES = frozenset({"sip", "insurance"})
+
+
+def afa_threshold_paise(mandate_category: Optional[str]) -> int:
+    """The AFA threshold that applies to this mandate, in paise.
+
+    Reads the same predicate the rules do, so the reported threshold cannot
+    disagree with the one actually enforced.
+    """
+    if is_sip_or_insurance(mandate_category):
+        return AFA_REQUIRED_ABOVE_SIP_INSURANCE_PAISE
+    return AFA_REQUIRED_ABOVE_PAISE
 
 # --------------------------------------------------------------------------
 # Minimum tracer confidence required to act autonomously. A local design
@@ -109,6 +129,10 @@ class RuleId(str, Enum):
     PRE_DEBIT_NOTICE_TOO_RECENT = "PRE_DEBIT_NOTICE_TOO_RECENT"
     MANDATE_CEILING_EXCEEDED = "MANDATE_CEILING_EXCEEDED"
     AFA_REQUIRED_AND_MISSING = "AFA_REQUIRED_AND_MISSING"
+    # The circular's higher threshold for SIP and insurance mandates. Kept as a
+    # rule of its own rather than folded into the one above, so an audit shows
+    # which threshold was applied and why.
+    AFA_SIP_INSURANCE_REQUIRED_AND_MISSING = "AFA_SIP_INSURANCE_REQUIRED_AND_MISSING"
     MAX_DISCOUNT_EXCEEDED = "MAX_DISCOUNT_EXCEEDED"
     MAX_RETRIES_EXCEEDED = "MAX_RETRIES_EXCEEDED"
     TRACE_CONFIDENCE_BELOW_THRESHOLD = "TRACE_CONFIDENCE_BELOW_THRESHOLD"
@@ -275,9 +299,19 @@ def check_mandate_ceiling(amount_paise: int, mandate_ceiling_paise: int) -> Opti
     )
 
 
-def check_afa(amount_paise: int, afa_flag: bool) -> Optional[Violation]:
+def check_afa(
+    amount_paise: int, afa_flag: bool, mandate_category: Optional[str] = None
+) -> Optional[Violation]:
     """AFA_REQUIRED_ABOVE = 15000 Rs -- strictly above the threshold, an
-    action needs afa_flag = true, else auto-block."""
+    action needs afa_flag = true, else auto-block.
+
+    SIP and insurance mandates are handed to `check_afa_sip_insurance`, which
+    applies the circular's higher threshold to them. Every other mandate, and
+    every event that states no category at all, is evaluated here exactly as
+    before -- the default argument keeps existing callers unchanged.
+    """
+    if is_sip_or_insurance(mandate_category):
+        return None
     if amount_paise <= AFA_REQUIRED_ABOVE_PAISE:
         return None
     if afa_flag is True:
@@ -289,6 +323,50 @@ def check_afa(amount_paise: int, afa_flag: bool) -> Optional[Violation]:
             f"AFA_REQUIRED_ABOVE threshold of Rs.{AFA_REQUIRED_ABOVE:,} and "
             f"`afa_flag` is {afa_flag!r}; additional factor of authentication is "
             "required, so the action is auto-blocked"
+        ),
+        final_action=RecommendedAction.ESCALATE_HUMAN,
+        cites_rbi=True,
+    )
+
+
+def is_sip_or_insurance(mandate_category: Optional[str]) -> bool:
+    """Whether the circular's higher AFA threshold applies to this mandate."""
+    if mandate_category is None:
+        return False
+    return mandate_category.strip().lower() in SIP_INSURANCE_MANDATE_CATEGORIES
+
+
+def check_afa_sip_insurance(
+    amount_paise: int, afa_flag: bool, mandate_category: Optional[str]
+) -> Optional[Violation]:
+    """AFA_REQUIRED_ABOVE_SIP_INSURANCE = 1 lakh Rs, for SIP and insurance
+    mandates only.
+
+    A relaxation of the general rule, not an addition to it: between Rs.15,000
+    and Rs.1 lakh one of these mandates needs no additional factor where any
+    other mandate would. Above Rs.1 lakh it blocks on a missing flag exactly as
+    the general rule does.
+
+    Applies only when the event names one of the categories the circular calls
+    out. Anything else, including an absent or unrecognised category, is left
+    to `check_afa` on the general threshold, so an unfamiliar value can only
+    ever produce the stricter outcome.
+    """
+    if not is_sip_or_insurance(mandate_category):
+        return None
+    if amount_paise <= AFA_REQUIRED_ABOVE_SIP_INSURANCE_PAISE:
+        return None
+    if afa_flag is True:
+        return None
+    return Violation(
+        rule_id=RuleId.AFA_SIP_INSURANCE_REQUIRED_AND_MISSING,
+        detail=(
+            f"action amount {_rupees(amount_paise)} is above the "
+            f"AFA_REQUIRED_ABOVE_SIP_INSURANCE threshold of "
+            f"Rs.{AFA_REQUIRED_ABOVE_SIP_INSURANCE:,} that applies to a "
+            f"'{mandate_category}' mandate, and `afa_flag` is {afa_flag!r}; "
+            "additional factor of authentication is required, so the action is "
+            "auto-blocked"
         ),
         final_action=RecommendedAction.ESCALATE_HUMAN,
         cites_rbi=True,

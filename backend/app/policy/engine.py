@@ -138,7 +138,22 @@ class PolicyEngine:
             ),
             (
                 R.RuleId.AFA_REQUIRED_AND_MISSING,
-                lambda: R.check_afa(event_context.amount, event_context.afa_flag),
+                lambda: R.check_afa(
+                    event_context.amount,
+                    event_context.afa_flag,
+                    event_context.mandate_category,
+                ),
+            ),
+            # The circular's higher threshold for SIP and insurance mandates.
+            # Exactly one of this and the rule above can fire for any event:
+            # each returns early on the categories the other owns.
+            (
+                R.RuleId.AFA_SIP_INSURANCE_REQUIRED_AND_MISSING,
+                lambda: R.check_afa_sip_insurance(
+                    event_context.amount,
+                    event_context.afa_flag,
+                    event_context.mandate_category,
+                ),
             ),
             (
                 R.RuleId.MAX_DISCOUNT_EXCEEDED,

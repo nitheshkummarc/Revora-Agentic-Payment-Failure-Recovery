@@ -307,6 +307,10 @@ COMMON_AMOUNTS_PAISE = (
     899_900,    # Rs.8,999
     1_249_900,  # Rs.12,499
 )
+#: Above the Rs.1 lakh SIP/insurance AFA threshold. Only the dedicated
+#: violation row uses it -- no ordinary recurring payment is this large.
+SIP_INSURANCE_VIOLATION_AMOUNT_PAISE = 15_000_000  # Rs.1,50,000
+
 HIGH_VALUE_AMOUNTS_PAISE = (
     1_799_900,  # Rs.17,999 -- above the AFA threshold
     2_499_900,  # Rs.24,999
@@ -423,6 +427,7 @@ def _compliant_batch_event(
     retry_count: int = 0,
     discount_amount: int = 0,
     opted_out: bool = False,
+    mandate_category: str = "general",
 ) -> Dict[str, Any]:
     """A row that satisfies every policy rule.
 
@@ -442,6 +447,7 @@ def _compliant_batch_event(
         # Set true above the AFA threshold so high-value rows are not blocked
         # for a reason the scenario is not about.
         "afa_flag": amount > AFA_REQUIRED_ABOVE_PAISE,
+        "mandate_category": mandate_category,
         "opted_out": opted_out,
         "retry_count": retry_count,
         "discount_amount": discount_amount,
@@ -457,7 +463,6 @@ def _row(
     setup: List[Dict[str, Any]],
     at_observation: Optional[List[Dict[str, Any]]] = None,
     *,
-    mandate_category: str = "general",
     expected_policy_rule: Optional[str] = None,
 ) -> Dict[str, Any]:
     return {
@@ -467,8 +472,6 @@ def _row(
         # What this row is here to exercise. Nothing reads it at runtime; the
         # point is that a reviewer can tell whether the row still does it.
         "intent": intent,
-        # Carried for the SIP/insurance AFA threshold, which no rule reads yet.
-        "mandate_category": mandate_category,
         # The rule this row is built to trip, or None. Named so the conformance
         # test can assert the violation bucket covers every rule.
         "expected_policy_rule": expected_policy_rule,
@@ -515,6 +518,7 @@ def build_standard_failures(count: int, rng: random.Random, start: int) -> List[
             retry_count=index % MAX_RETRIES,
             # At or below the cap: the boundary value is allowed.
             discount_amount=MAX_DISCOUNT_PAISE if index % 11 == 0 else 0,
+            mandate_category=rng.choice(MANDATE_CATEGORIES),
         )
         rows.append(
             _row(
@@ -530,7 +534,6 @@ def build_standard_failures(count: int, rng: random.Random, start: int) -> List[
                     _create_step(payment_id, amount, note),
                     _fail_step(payment_id, profile, chaos),
                 ],
-                mandate_category=rng.choice(MANDATE_CATEGORIES),
             )
         )
     return rows
@@ -566,8 +569,9 @@ def build_ambiguous(count: int, rng: random.Random, start: int) -> List[Dict[str
         profile = "incorrect_otp" if index % 2 == 0 else "insufficient_funds"
         amount = rng.choice(COMMON_AMOUNTS_PAISE)
         note = rng.choice(BENIGN_NOTES)
-        batch_event = _compliant_batch_event(payment_id, amount, note=note)
-        category = rng.choice(MANDATE_CATEGORIES)
+        batch_event = _compliant_batch_event(
+            payment_id, amount, note=note, mandate_category=rng.choice(MANDATE_CATEGORIES)
+        )
 
         at_observation: List[Dict[str, Any]] = []
         if sub_case == "silent_drop":
@@ -628,7 +632,6 @@ def build_ambiguous(count: int, rng: random.Random, start: int) -> List[Dict[str
                 batch_event,
                 setup=setup,
                 at_observation=at_observation,
-                mandate_category=category,
             )
         )
     return rows
@@ -693,9 +696,27 @@ def _violation_specs() -> List[Dict[str, Any]]:
             "rule": "AFA_REQUIRED_AND_MISSING",
             "scenario": "afa_required_but_flag_false",
             # The builder forces this row above the AFA threshold; the ceiling
-            # is widened so the earlier ceiling rule still passes.
+            # is widened so the earlier ceiling rule still passes. The category
+            # is pinned because these amounts sit under the Rs.1 lakh SIP and
+            # insurance threshold -- drawing one of those categories at random
+            # would relax the row out of being a violation at all.
+            "mandate_category": "general",
             "mutate": {"afa_flag": False, "mandate_ceiling": "DOUBLE_AMOUNT"},
             "intent": "amount above the AFA threshold without the additional factor flag",
+        },
+        {
+            "rule": "AFA_SIP_INSURANCE_REQUIRED_AND_MISSING",
+            "scenario": "sip_mandate_over_one_lakh_without_afa",
+            # Above Rs.1 lakh, where even the relaxed threshold requires AFA.
+            # Deliberately larger than every other amount in the dataset: this
+            # rule cannot be reached from the recurring-billing range.
+            "amount_paise": SIP_INSURANCE_VIOLATION_AMOUNT_PAISE,
+            "mandate_category": "sip",
+            "mutate": {"afa_flag": False, "mandate_ceiling": "DOUBLE_AMOUNT"},
+            "intent": (
+                "a SIP mandate above the Rs.1 lakh threshold without the additional "
+                "factor flag; the relaxed threshold still blocks it"
+            ),
         },
         {
             "rule": "MAX_DISCOUNT_EXCEEDED",
@@ -722,14 +743,22 @@ def build_policy_violations(count: int, rng: random.Random, start: int) -> List[
         payment_id = f"pay_pol_{n:04d}"
         profile = "incorrect_otp" if index % 2 == 0 else "insufficient_funds"
 
-        # The AFA row only means anything above the threshold.
-        needs_high_value = spec["rule"] == "AFA_REQUIRED_AND_MISSING"
-        amount = rng.choice(
-            HIGH_VALUE_AMOUNTS_PAISE if needs_high_value else COMMON_AMOUNTS_PAISE
-        )
+        # A rule that only bites above a threshold needs a row above it.
+        if spec.get("amount_paise") is not None:
+            amount = spec["amount_paise"]
+        elif spec["rule"] == "AFA_REQUIRED_AND_MISSING":
+            amount = rng.choice(HIGH_VALUE_AMOUNTS_PAISE)
+        else:
+            amount = rng.choice(COMMON_AMOUNTS_PAISE)
 
         note = rng.choice(BENIGN_NOTES)
-        batch_event = _compliant_batch_event(payment_id, amount, note=note)
+        batch_event = _compliant_batch_event(
+            payment_id,
+            amount,
+            note=note,
+            mandate_category=spec.get("mandate_category")
+            or rng.choice(MANDATE_CATEGORIES),
+        )
         for key, value in spec["mutate"].items():
             if value == "HALF_AMOUNT":
                 batch_event[key] = amount // 2
@@ -749,7 +778,6 @@ def build_policy_violations(count: int, rng: random.Random, start: int) -> List[
                     _create_step(payment_id, amount, note),
                     _fail_step(payment_id, profile),
                 ],
-                mandate_category=rng.choice(MANDATE_CATEGORIES),
                 expected_policy_rule=spec["rule"],
             )
         )
@@ -805,7 +833,7 @@ def build_adversarial(count: int, rng: random.Random, start: int) -> List[Dict[s
         )
 
         batch_event = _compliant_batch_event(
-            payment_id, amount, note=note, opted_out=opted_out
+            payment_id, amount, note=note, opted_out=opted_out, mandate_category=category
         )
 
         setup = [_create_step(payment_id, amount, note)]
@@ -851,7 +879,6 @@ def build_adversarial(count: int, rng: random.Random, start: int) -> List[Dict[s
                 intent,
                 batch_event,
                 setup=setup,
-                mandate_category=category,
             )
         )
     return rows

@@ -39,6 +39,10 @@ class EventContext(StrictModel):
         default=None, ge=0, description="Customer-set ceiling in paise"
     )
     afa_flag: Optional[bool] = None
+    # Selects which AFA threshold applies. Free-form text rather than an enum:
+    # an unrecognised value falls back to the general threshold, which is the
+    # stricter of the two, so an unknown category can never relax the rule.
+    mandate_category: Optional[str] = None
 
     # --- dunning / opt-out ---
     opted_out: bool = False

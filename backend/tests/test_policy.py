@@ -110,17 +110,177 @@ def test_rbi_circular_is_cited_by_number_only():
         assert "section" not in rule_id.value.lower()
 
 
-def test_sip_insurance_threshold_is_documented_but_not_enforced(engine):
-    """The Rs.1 lakh SIP/insurance threshold is recorded but not enforced:
-    applying it needs a mandate-category field events do not yet carry."""
+def test_an_event_stating_no_mandate_category_uses_the_general_threshold(engine):
+    """The higher threshold applies only when the event asks for it. Without a
+    category, a Rs.20,000 action without AFA is blocked exactly as before."""
     assert R.AFA_REQUIRED_ABOVE_SIP_INSURANCE == 100000
-    # A Rs.20,000 action is still blocked without AFA -- the general threshold
-    # is what is enforced.
     decision = engine.validate(
         llm(), context(amount=2_000_000, afa_flag=False, mandate_ceiling=5_000_000)
     )
     assert decision.approved is False
     assert decision.rule_id == "AFA_REQUIRED_AND_MISSING"
+
+
+# --------------------------------------------------------------------------
+# SIP / insurance AFA threshold (Rs.1 lakh)
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize("category", ["sip", "insurance"])
+def test_sip_or_insurance_under_one_lakh_needs_no_afa(engine, category):
+    """Rs.20,000 is over the general threshold but under the Rs.1 lakh one that
+    applies to these mandates, so no additional factor is required."""
+    decision = engine.validate(
+        llm(),
+        context(
+            amount=2_000_000,  # Rs.20,000
+            afa_flag=False,
+            mandate_ceiling=20_000_000,
+            mandate_category=category,
+        ),
+    )
+    assert decision.approved is True
+    assert decision.rule_id is None
+    assert decision.final_action is RecommendedAction.RETRY_SOFT
+
+
+@pytest.mark.parametrize("category", ["sip", "insurance"])
+def test_sip_or_insurance_over_one_lakh_is_blocked_without_afa(engine, category):
+    decision = engine.validate(
+        llm(),
+        context(
+            amount=15_000_000,  # Rs.1,50,000
+            afa_flag=False,
+            mandate_ceiling=30_000_000,
+            mandate_category=category,
+        ),
+    )
+    assert decision.approved is False
+    assert decision.rule_id == "AFA_SIP_INSURANCE_REQUIRED_AND_MISSING"
+    assert decision.final_action is RecommendedAction.ESCALATE_HUMAN
+    assert "Rs.100,000" in decision.blocked_reason
+    assert f"'{category}' mandate" in decision.blocked_reason
+    # Cites the circular, like every other RBI-grounded block.
+    assert R.RBI_CIRCULAR in decision.blocked_reason
+
+
+@pytest.mark.parametrize("category", ["sip", "insurance"])
+def test_sip_or_insurance_over_one_lakh_passes_when_afa_is_present(engine, category):
+    decision = engine.validate(
+        llm(),
+        context(
+            amount=15_000_000,
+            afa_flag=True,
+            mandate_ceiling=30_000_000,
+            mandate_category=category,
+        ),
+    )
+    assert decision.approved is True
+    assert decision.rule_id is None
+
+
+def test_a_non_sip_mandate_still_uses_the_fifteen_thousand_threshold(engine):
+    """The relaxation is scoped to the categories the circular names. Any other
+    category is evaluated on the general threshold."""
+    decision = engine.validate(
+        llm(),
+        context(
+            amount=2_000_000,  # Rs.20,000
+            afa_flag=False,
+            mandate_ceiling=20_000_000,
+            mandate_category="utility",
+        ),
+    )
+    assert decision.approved is False
+    assert decision.rule_id == "AFA_REQUIRED_AND_MISSING"
+
+
+def test_an_unrecognised_category_falls_back_to_the_stricter_threshold(engine):
+    """Fail closed on an unfamiliar value: an unknown category must not be able
+    to buy the relaxation that only SIP and insurance are entitled to."""
+    decision = engine.validate(
+        llm(),
+        context(
+            amount=2_000_000,
+            afa_flag=False,
+            mandate_ceiling=20_000_000,
+            mandate_category="sip_but_not_really",
+        ),
+    )
+    assert decision.approved is False
+    assert decision.rule_id == "AFA_REQUIRED_AND_MISSING"
+
+
+@pytest.mark.parametrize("category", ["SIP", "  Insurance  ", "sIp"])
+def test_category_matching_ignores_case_and_surrounding_space(engine, category):
+    """The category is free-form text on the event, not an enum, so a casing or
+    whitespace difference must not silently change which threshold applies."""
+    decision = engine.validate(
+        llm(),
+        context(
+            amount=2_000_000,
+            afa_flag=False,
+            mandate_ceiling=20_000_000,
+            mandate_category=category,
+        ),
+    )
+    assert decision.approved is True
+
+
+def test_the_sip_threshold_is_strictly_above_like_the_general_one(engine):
+    """Exactly at Rs.1 lakh is allowed; one paise over is not."""
+    at_threshold = engine.validate(
+        llm(),
+        context(
+            amount=R.AFA_REQUIRED_ABOVE_SIP_INSURANCE_PAISE,
+            afa_flag=False,
+            mandate_ceiling=30_000_000,
+            mandate_category="sip",
+        ),
+    )
+    assert at_threshold.approved is True
+
+    one_over = engine.validate(
+        llm(),
+        context(
+            amount=R.AFA_REQUIRED_ABOVE_SIP_INSURANCE_PAISE + 1,
+            afa_flag=False,
+            mandate_ceiling=30_000_000,
+            mandate_category="sip",
+        ),
+    )
+    assert one_over.approved is False
+    assert one_over.rule_id == "AFA_SIP_INSURANCE_REQUIRED_AND_MISSING"
+
+
+def test_the_two_afa_rules_are_mutually_exclusive(engine):
+    """Each returns early on the categories the other owns, so no event can be
+    blocked by both -- and the audit always shows which threshold was applied."""
+    for category in (None, "utility", "sip", "insurance"):
+        decision = engine.validate(
+            llm(),
+            context(
+                amount=15_000_000,
+                afa_flag=False,
+                mandate_ceiling=30_000_000,
+                mandate_category=category,
+            ),
+        )
+        failed = [e.rule_id for e in decision.rules_evaluated if not e.passed]
+        assert len(failed) == 1, (category, failed)
+        expected = (
+            "AFA_SIP_INSURANCE_REQUIRED_AND_MISSING"
+            if category in ("sip", "insurance")
+            else "AFA_REQUIRED_AND_MISSING"
+        )
+        assert failed == [expected]
+
+
+def test_the_reported_threshold_matches_the_one_enforced(engine):
+    assert R.afa_threshold_paise("sip") == R.AFA_REQUIRED_ABOVE_SIP_INSURANCE_PAISE
+    assert R.afa_threshold_paise("insurance") == R.AFA_REQUIRED_ABOVE_SIP_INSURANCE_PAISE
+    assert R.afa_threshold_paise(None) == R.AFA_REQUIRED_ABOVE_PAISE
+    assert R.afa_threshold_paise("utility") == R.AFA_REQUIRED_ABOVE_PAISE
+    # Rs.1 lakh in paise, stated once so a unit slip is visible here.
+    assert R.AFA_REQUIRED_ABOVE_SIP_INSURANCE_PAISE == 10_000_000
 
 
 # --------------------------------------------------------------------------
@@ -147,6 +307,7 @@ def test_every_rule_is_recorded_even_when_it_passes(engine):
         "PRE_DEBIT_NOTICE_TOO_RECENT",
         "MANDATE_CEILING_EXCEEDED",
         "AFA_REQUIRED_AND_MISSING",
+        "AFA_SIP_INSURANCE_REQUIRED_AND_MISSING",
         "MAX_DISCOUNT_EXCEEDED",
         "MAX_RETRIES_EXCEEDED",
     ):

@@ -46,6 +46,7 @@ EXPECTED_VIOLATION_RULES = {
     "PRE_DEBIT_NOTICE_TOO_RECENT",
     "MANDATE_CEILING_EXCEEDED",
     "AFA_REQUIRED_AND_MISSING",
+    "AFA_SIP_INSURANCE_REQUIRED_AND_MISSING",
     "MAX_DISCOUNT_EXCEEDED",
     "MAX_RETRIES_EXCEEDED",
 }
@@ -147,15 +148,22 @@ def test_batch_event_keys_match_the_contract_exactly(rows):
         assert set(row["batch_event"]) == expected, row["row_id"]
 
 
-def test_mandate_category_is_carried_outside_the_batch_event(rows):
-    """The field is recorded for the higher SIP/insurance AFA threshold, which
-    no rule reads yet. It sits at row level because BatchEvent has no field for
-    it and forbids extras -- putting it inside would fail every row."""
-    assert "mandate_category" not in BatchEvent.model_fields
+def test_mandate_category_is_part_of_the_batch_event(rows):
+    """It selects which AFA threshold applies, so it has to reach the policy
+    engine. It lives on the BatchEvent itself and nowhere else -- a second copy
+    at row level could drift from the one actually enforced."""
+    assert "mandate_category" in BatchEvent.model_fields
     for row in rows:
-        assert row["mandate_category"]
-        assert "mandate_category" not in row["batch_event"]
-    assert len({r["mandate_category"] for r in rows}) > 1
+        assert row["batch_event"]["mandate_category"]
+        assert "mandate_category" not in row
+    assert len({r["batch_event"]["mandate_category"] for r in rows}) > 1
+
+
+def test_the_dataset_exercises_both_afa_thresholds(rows):
+    """Both sides of the new rule need rows, or the batch proves only one."""
+    categories = {r["batch_event"]["mandate_category"] for r in rows}
+    assert categories & R.SIP_INSURANCE_MANDATE_CATEGORIES
+    assert categories - R.SIP_INSURANCE_MANDATE_CATEGORIES
 
 
 # --------------------------------------------------------------------------
@@ -443,7 +451,10 @@ def test_each_violation_row_trips_exactly_one_rule(rows):
             for violation in (
                 R.check_pre_debit_notice(event.pre_debit_notice_sent_at, reference),
                 R.check_mandate_ceiling(event.amount, event.mandate_ceiling),
-                R.check_afa(event.amount, event.afa_flag),
+                R.check_afa(event.amount, event.afa_flag, event.mandate_category),
+                R.check_afa_sip_insurance(
+                    event.amount, event.afa_flag, event.mandate_category
+                ),
                 R.check_max_discount(event.discount_amount),
                 R.check_max_retries(event.retry_count),
             ):
@@ -469,7 +480,13 @@ def test_non_violation_rows_break_no_rule(rows):
         )
         assert R.check_pre_debit_notice(event.pre_debit_notice_sent_at, reference) is None
         assert R.check_mandate_ceiling(event.amount, event.mandate_ceiling) is None
-        assert R.check_afa(event.amount, event.afa_flag) is None
+        assert R.check_afa(event.amount, event.afa_flag, event.mandate_category) is None
+        assert (
+            R.check_afa_sip_insurance(
+                event.amount, event.afa_flag, event.mandate_category
+            )
+            is None
+        )
         assert R.check_max_discount(event.discount_amount) is None
         assert R.check_max_retries(event.retry_count) is None
         assert event.opted_out is False
