@@ -245,6 +245,20 @@ Requirements:
 Do NOT build: any user authentication, any localStorage/sessionStorage (React state only, data resets on refresh — this is fine for a demo), any editing/write capability from the UI back to the backend (this dashboard is read-only observability, not a control panel), any routing library beyond what's needed for the single-page trace view (a full router is overkill for a 15-day hackathon demo).
 ```
 
+### Correction, appended after the batch run — "Recovery Rate" is superseded
+
+Requirement 4 above asks for a metric named **"Recovery Rate (% of at-risk amount recovered)"**. Do not build that name. It is superseded by **"Correctly Routed Rate"**, per the decision log in CLAUDE.md. The original prompt text above is left unedited on purpose; this note is the newer decision.
+
+Why: `RETRY_SOFT` is executed against the mock gateway, where a retry always succeeds. Nothing in this system models the probability that a real retry would land, so the figure is not a measured statistic — it is arithmetic over the synthetic dataset's bucket design. Presenting it as a recovery rate would claim a measurement the project has no data to support, which is exactly the kind of number a judge is likely to probe.
+
+The same correction applies to how the ₹ figures are framed. The summary header shows, in this order:
+
+1. **Rules fired and enforcement counts first** — this is what the batch actually proves, so it leads.
+2. **₹ figures labelled "money moved through verified-safe paths"** — never "money recovered by intelligent retry". Blocked value is "preserved by policy"; settled value is "settled via retry".
+3. **"Correctly Routed Rate"** — same arithmetic as the original metric, honest name.
+
+Everything else in the prompt stands unchanged. `data/run_batch.py` already prints the renamed labels.
+
 ---
 
 ## Order of operations reminder
