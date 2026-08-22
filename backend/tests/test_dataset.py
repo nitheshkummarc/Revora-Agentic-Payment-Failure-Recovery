@@ -253,6 +253,56 @@ def test_unfilled_schema_gaps_are_recorded_rather_than_invented(dataset):
         assert gap["gap"] and gap["detail"]
 
 
+def test_closed_gaps_are_kept_alongside_the_open_ones(dataset):
+    """Both lists are published. Deleting a gap once it is closed would lose the
+    record of what was missing and what fixed it."""
+    provenance = dataset["value_provenance"]
+    assert provenance["resolved_gaps"]
+    for gap in provenance["resolved_gaps"]:
+        assert gap["gap"] and gap["resolved_by"]
+
+
+def test_the_hard_decline_and_gateway_gaps_are_actually_closed_in_the_data(rows):
+    """A gap marked closed has to be closed in the rows, not just in the note."""
+    errors = _errors(rows)
+    reasons = {e["reason"] for e in errors}
+    assert "card_declined" in reasons
+    assert "gateway_technical_error" in reasons
+    assert any(e["source"] == "gateway" for e in errors)
+    assert any(e["source"] == "bank" for e in errors)
+
+
+def test_every_description_is_quoted_from_a_documented_source(generator):
+    """Two documented sources, and each profile uses exactly one of them.
+
+    `incorrect_otp` keeps the error-object example's own `description` string,
+    which is the documented value for that field. The rest quote the reference
+    explanation for their reason. Neither is composed here, which is what the
+    original gap was about.
+    """
+    api_example_description = "Payment failed due to incorrect OTP"
+
+    for name, profile in generator.FAILURE_PROFILES.items():
+        assert profile["reason"] == name
+        description = profile["description"]
+        assert description
+        if name == "incorrect_otp":
+            assert description == api_example_description
+        else:
+            # Quoted prose from the reference explanation, not a template built
+            # from the reason string.
+            assert description != f"Payment failed due to {name.replace('_', ' ')}"
+            assert description.endswith(".")
+
+
+def test_the_malformed_source_value_is_excluded(generator, rows):
+    """The reference sheet carries `psp_app_ not_available` with a stray space.
+    It is a typo in that file, so it is not a usable value."""
+    assert "psp_app_ not_available" not in generator.DOCUMENTED_ERROR_REASONS
+    assert all(" " not in reason for reason in generator.DOCUMENTED_ERROR_REASONS)
+    assert all(" " not in e["reason"] for e in _errors(rows))
+
+
 def test_bucket_split_is_labelled_as_coverage_design(dataset):
     """The proportions are a coverage choice, not a measurement. The file has
     to say so, because the number travels into the pitch."""

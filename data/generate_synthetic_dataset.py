@@ -86,7 +86,50 @@ DOCUMENTED_ERROR_CODES = ("BAD_REQUEST_ERROR",)
 DOCUMENTED_ERROR_FIELDS = ("otp",)
 DOCUMENTED_ERROR_SOURCES = ("customer", "bank", "gateway", "business", "network")
 DOCUMENTED_ERROR_STEPS = ("payment_authentication",)
-DOCUMENTED_ERROR_REASONS = ("incorrect_otp", "insufficient_funds")
+#: The full documented `reason` vocabulary, transcribed from the reference
+#: spreadsheet (109 values). `psp_app_ not_available` appears in the source with
+#: a stray space; it is a typo in that file and is deliberately excluded.
+DOCUMENTED_ERROR_REASONS = (
+    "amount_less_than_minimum_amount", "authentication_failed",
+    "authorisation_declined_by_psp", "bank_account_invalid",
+    "bank_account_validation_failed", "bank_cutoff_in_progress", "bank_not_available",
+    "bank_not_enabled", "bank_technical_error", "beneficiary_account_does_not_exist",
+    "beneficiary_account_dormant", "capture_failed", "card_declined", "card_expired",
+    "card_network_not_enabled", "card_not_enrolled", "card_number_invalid",
+    "card_type_invalid", "collect_on_mcc_blocked", "collect_request_pending",
+    "compliance_violation", "credit_failed", "credit_limit_exceeded",
+    "credit_limit_expired", "credit_limit_inactive", "credit_limit_not_approved",
+    "credit_not_permitted", "debit_declined", "debit_instrument_blocked",
+    "debit_instrument_inactive", "deemed_transaction", "duplicate_refund_id",
+    "duplicate_request", "duplicate_rrn_found", "emi_greater_than_max_amount",
+    "emi_plan_unavailable", "funds_blocked_by_mandate", "gateway_technical_error",
+    "incorrect_atm_pin", "incorrect_card_details", "incorrect_card_expiry_date",
+    "incorrect_cardholder_name", "incorrect_cvv", "incorrect_otp", "incorrect_pin",
+    "input_validation_failed", "insufficient_funds",
+    "international_transaction_not_allowed", "invalid_amount", "invalid_currency",
+    "invalid_device", "invalid_email", "invalid_mobile_number", "invalid_order_id",
+    "invalid_request", "invalid_response_from_gateway", "invalid_user_details",
+    "invalid_vpa", "issuer_technical_error", "live_mode_not_enabled",
+    "mandate_creation_declined", "mandate_creation_expired", "mandate_creation_failed",
+    "mandate_creation_timeout", "mcc_amount_limit_exceeded", "merchant_not_activated",
+    "mismatch_in_transaction_details", "mobile_number_invalid", "order_already_paid",
+    "order_amount_mismatch", "order_payment_method_mismatch", "otp_attempts_exceeded",
+    "otp_expired", "payment_amount_tampered", "payment_cancelled",
+    "payment_collect_request_expired", "payment_declined",
+    "payment_declined_due_to_high_traffic", "payment_failed",
+    "payment_method_not_enabled", "payment_pending", "payment_pending_approval",
+    "payment_risk_check_failed", "payment_session_expired", "payment_timed_out",
+    "pin_attempts_exceeded", "pin_not_set", "psp_app_not_supported",
+    "psp_not_available", "psp_not_registered", "record_not_found",
+    "recurring_payment_not_enabled", "refund_limit_crossed",
+    "reqauth_mandate_not_acknowledged", "request_timed_out", "server_error",
+    "transaction_daily_count_exceeded", "transaction_daily_limit_exceeded",
+    "transaction_frequency_limit_exceeded", "transaction_limit_exceeded",
+    "transaction_on_vpa_restricted", "upi_app_technical_error",
+    "upi_autopay_not_supported_on_psp", "upi_collect_not_enabled",
+    "upi_intent_not_enabled", "user_not_eligible", "user_not_registered_for_netbanking",
+    "verification_failed", "vpa_resolution_failed",
+)
 
 DOCUMENTED_WEBHOOK_EVENTS = (
     "payment.authorized",
@@ -102,44 +145,61 @@ DOCUMENTED_WEBHOOK_EVENTS = (
     "payment.dispute.created",
 )
 
-#: Where the reference schema is thinner than the scenarios need. Printed on
-#: every run so the gap stays visible rather than being quietly absorbed.
+#: Where the reference material is still thinner than the scenarios need.
+#: Printed on every run so the gap stays visible rather than being quietly
+#: absorbed.
 VALUE_GAPS: List[Dict[str, str]] = [
-    {
-        "gap": "no `reason` value for a hard decline",
-        "detail": (
-            "The bucket definition names 'hard decline' as a standard failure, but "
-            "the reference schema supplies only `incorrect_otp` and "
-            "`insufficient_funds`. Hard-decline rows are generated as "
-            "`insufficient_funds` rather than given an invented decline reason."
-        ),
-    },
     {
         "gap": "only one `step` value is documented",
         "detail": (
-            "`payment_authentication` is the sole documented step, so it is used "
-            "for both reasons. Pairing it with `insufficient_funds` is a weaker "
-            "semantic fit than a payment-authorization step would be, but no such "
-            "value is documented and none is invented here."
+            "`payment_authentication` remains the sole documented step. The error "
+            "reason spreadsheet has three columns -- Reason, Explanation, Next "
+            "Steps -- and no step column at all, so it does not supply any further "
+            "values. Every profile therefore still carries "
+            "`step: payment_authentication`, which is a weak semantic fit for a "
+            "hard decline or a gateway error. No authorization-step value is "
+            "invented to improve the fit."
+        ),
+    },
+    {
+        "gap": "`reason` to `source` attribution is not documented as a mapping",
+        "detail": (
+            "The spreadsheet documents reasons but never states which `source` a "
+            "reason is attributed to; one of its own rows says the attribution "
+            "arrives at runtime in the `source` parameter. Where a profile below "
+            "sets a source, it is grounded in that reason's Explanation text "
+            "naming the responsible party -- the issuing bank for `card_declined`, "
+            "the gateway for `gateway_technical_error` -- rather than in a "
+            "published mapping. `business` and `network` stay unused."
+        ),
+    },
+]
+
+#: Gaps that the reference spreadsheet closed. Kept rather than deleted so the
+#: dataset can still show what was missing and what fixed it.
+RESOLVED_GAPS: List[Dict[str, str]] = [
+    {
+        "gap": "no `reason` value for a hard decline",
+        "resolved_by": (
+            "`card_declined` is documented verbatim, with an explanation "
+            "attributing the decline to the issuing bank. Hard-decline rows now "
+            "use it instead of standing in as `insufficient_funds`."
         ),
     },
     {
         "gap": "no `reason` value maps to a gateway-attributed failure",
-        "detail": (
-            "The bucket definition calls for `source: bank`/`gateway`. Both "
-            "documented reasons attribute to the customer or the bank, so no row "
-            "carries `source: gateway`; `gateway`, `business` and `network` remain "
-            "unused whitelist members."
+        "resolved_by": (
+            "`gateway_technical_error` is documented, and its explanation places "
+            "the failure at the gateway. That is what `source: gateway` rests on, "
+            "so the bucket definition's bank/gateway split is now real."
         ),
     },
     {
         "gap": "no `description` documented for insufficient_funds",
-        "detail": (
-            "Only 'Payment failed due to incorrect OTP' is documented. The "
-            "insufficient-funds description is written to the same template. "
-            "`description` is free-form prose rather than a coded value, but the "
-            "derivation is recorded here so it is not mistaken for a documented "
-            "string."
+        "resolved_by": (
+            "The spreadsheet's Explanation column supplies documented prose for "
+            "every reason. Descriptions are now quoted from it verbatim instead of "
+            "being written to a template."
         ),
     },
 ]
@@ -162,14 +222,58 @@ FAILURE_PROFILES: Dict[str, Dict[str, Any]] = {
         # `field` is omitted: the failure is not attributable to one input
         # field, and the only documented field value is `otp`.
         "code": "BAD_REQUEST_ERROR",
-        "description": "Payment failed due to insufficient funds",
+        "description": (
+            "The customer does not have sufficient funds in the account to "
+            "complete the payment."
+        ),
         "field": None,
         "source": "bank",
         "step": "payment_authentication",
         "reason": "insufficient_funds",
         "metadata": {},
     },
+    # A hard decline. The reference explanation names the issuing bank as the
+    # decliner, which is what grounds `source: bank` here.
+    "card_declined": {
+        "code": "BAD_REQUEST_ERROR",
+        "description": (
+            "Issuer Bank can decline the card due to multiple checks at their end. "
+            "The exact reason in this case is not shared with Razorpay. Customer "
+            "needs to reach out to the issuing bank."
+        ),
+        "field": None,
+        "source": "bank",
+        "step": "payment_authentication",
+        "reason": "card_declined",
+        "metadata": {},
+    },
+    # The reference explanation attributes this one to the gateway in its own
+    # words, which is the only reason `source: gateway` is used anywhere.
+    "gateway_technical_error": {
+        "code": "BAD_REQUEST_ERROR",
+        "description": (
+            "Payment failed due to a technical error at the gateway. This usually "
+            "occurs when the gateway server encounters a technical error while "
+            "processing the payment."
+        ),
+        "field": None,
+        "source": "gateway",
+        "step": "payment_authentication",
+        "reason": "gateway_technical_error",
+        "metadata": {},
+    },
 }
+
+#: Cycled through the standard-failure bucket. The two added profiles are what
+#: close the hard-decline and gateway-attribution gaps; the other buckets stay
+#: on the original pair, since their scenarios turn on delivery and compliance
+#: rather than on which failure occurred.
+STANDARD_FAILURE_PROFILES = (
+    "incorrect_otp",
+    "insufficient_funds",
+    "card_declined",
+    "gateway_technical_error",
+)
 
 
 # --------------------------------------------------------------------------
@@ -393,7 +497,7 @@ def build_standard_failures(count: int, rng: random.Random, start: int) -> List[
     for index in range(count):
         n = start + index
         payment_id = f"pay_std_{n:04d}"
-        profile = "incorrect_otp" if index % 2 == 0 else "insufficient_funds"
+        profile = STANDARD_FAILURE_PROFILES[index % len(STANDARD_FAILURE_PROFILES)]
 
         high_value = index % 9 == 0
         amount = rng.choice(HIGH_VALUE_AMOUNTS_PAISE if high_value else COMMON_AMOUNTS_PAISE)
@@ -822,6 +926,7 @@ def generate(count: int = DEFAULT_COUNT, seed: int = DEFAULT_SEED) -> Dict[str, 
             "documented_error_reasons": list(DOCUMENTED_ERROR_REASONS),
             "documented_webhook_events": list(DOCUMENTED_WEBHOOK_EVENTS),
             "gaps": VALUE_GAPS,
+            "resolved_gaps": RESOLVED_GAPS,
         },
         "events": events,
     }
@@ -866,10 +971,16 @@ def _print_summary(dataset: Dict[str, Any], path: Path) -> None:
         print(f"  {rule:<52} {hits:>3}")
 
     print()
-    print("Value gaps in the reference schema (not filled with invented values):")
+    print("Value gaps closed by the reference reason list:")
+    for gap in RESOLVED_GAPS:
+        print(f"  [closed] {gap['gap']}")
+        print(f"           {gap['resolved_by']}")
+
+    print()
+    print("Value gaps still open (not filled with invented values):")
     for gap in VALUE_GAPS:
-        print(f"  - {gap['gap']}")
-        print(f"    {gap['detail']}")
+        print(f"  [open]   {gap['gap']}")
+        print(f"           {gap['detail']}")
 
 
 def main() -> None:

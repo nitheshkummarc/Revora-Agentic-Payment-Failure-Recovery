@@ -234,3 +234,75 @@ Treat everything in this list as the source of truth for schema, field names, an
 - Razorpay Agent Studio / Subscription Recovery Agent internals: only a product announcement/blog description exists publicly (confirmed via web search, not an API doc or spec). Don't cite it as if there's a technical spec — there isn't one publicly available as of this conversation.
 - Razorpay Vulcan internals: same situation — press-release level detail only, no public technical documentation.
 - Any "real merchant complaint dataset" — does not exist as a citable source; the market-validation numbers (churn %, industry cost figures) used earlier in this conversation came from industry research (Recurly, ProfitWell-style dunning research, YC-funded competitor positioning), not Razorpay-specific complaint data. Say "industry-wide" when citing these, not "Razorpay merchants report."
+
+---
+
+### Razorpay — Payment error `reason` values (appended correction)
+
+Source: `https://razorpay.com/docs/build/browser/assets/images/payments_error_reasons.xlsx`,
+linked from the Razorpay error documentation. Retrieved 2026-08-22. The sheet has
+exactly three columns — **Reason | Explanation | Next Steps** — and 117 data rows,
+carrying **109 distinct `reason` values**.
+
+**Scope — read this before treating the list as a fix for everything.** This file
+documents the `reason` field only. It contains no `source` column and no `step`
+column, so it does not supply new values for either, and it does not document which
+`source` any given `reason` is attributed to. One row states outright that the
+attribution is returned at runtime: *"This information will be available in the
+'source' parameter."* Pairing a reason with a source therefore remains an inference
+unless the reason's own Explanation text names the responsible party.
+
+**Transcription note.** The source file contains one malformed value,
+`psp_app_ not_available`, with a stray space. It is reproduced here as it appears
+but must not be used — it is a typo in Razorpay's own sheet, not a real value.
+
+The `Explanation` column is documented prose for each reason and is the traceable
+source for a human-readable description where the API error example does not supply one.
+
+Full documented `reason` list:
+
+```
+amount_less_than_minimum_amount, authentication_failed, authorisation_declined_by_psp,
+bank_account_invalid, bank_account_validation_failed, bank_cutoff_in_progress,
+bank_not_available, bank_not_enabled, bank_technical_error,
+beneficiary_account_does_not_exist, beneficiary_account_dormant, capture_failed,
+card_declined, card_expired, card_network_not_enabled, card_not_enrolled,
+card_number_invalid, card_type_invalid, collect_on_mcc_blocked,
+collect_request_pending, compliance_violation, credit_failed, credit_limit_exceeded,
+credit_limit_expired, credit_limit_inactive, credit_limit_not_approved,
+credit_not_permitted, debit_declined, debit_instrument_blocked,
+debit_instrument_inactive, deemed_transaction, duplicate_refund_id, duplicate_request,
+duplicate_rrn_found, emi_greater_than_max_amount, emi_plan_unavailable,
+funds_blocked_by_mandate, gateway_technical_error, incorrect_atm_pin,
+incorrect_card_details, incorrect_card_expiry_date, incorrect_cardholder_name,
+incorrect_cvv, incorrect_otp, incorrect_pin, input_validation_failed,
+insufficient_funds, international_transaction_not_allowed, invalid_amount,
+invalid_currency, invalid_device, invalid_email, invalid_mobile_number,
+invalid_order_id, invalid_request, invalid_response_from_gateway,
+invalid_user_details, invalid_vpa, issuer_technical_error, live_mode_not_enabled,
+mandate_creation_declined, mandate_creation_expired, mandate_creation_failed,
+mandate_creation_timeout, mcc_amount_limit_exceeded, merchant_not_activated,
+mismatch_in_transaction_details, mobile_number_invalid, order_already_paid,
+order_amount_mismatch, order_payment_method_mismatch, otp_attempts_exceeded,
+otp_expired, payment_amount_tampered, payment_cancelled,
+payment_collect_request_expired, payment_declined,
+payment_declined_due_to_high_traffic, payment_failed, payment_method_not_enabled,
+payment_pending, payment_pending_approval, payment_risk_check_failed,
+payment_session_expired, payment_timed_out, pin_attempts_exceeded, pin_not_set,
+psp_app_not_supported, psp_not_available, psp_not_registered, record_not_found,
+recurring_payment_not_enabled, refund_limit_crossed, reqauth_mandate_not_acknowledged,
+request_timed_out, server_error, transaction_daily_count_exceeded,
+transaction_daily_limit_exceeded, transaction_frequency_limit_exceeded,
+transaction_limit_exceeded, transaction_on_vpa_restricted, upi_app_technical_error,
+upi_autopay_not_supported_on_psp, upi_collect_not_enabled, upi_intent_not_enabled,
+user_not_eligible, user_not_registered_for_netbanking, verification_failed,
+vpa_resolution_failed
+```
+
+Explanations quoted verbatim for the values this project uses:
+
+- `incorrect_otp` — The customer has entered an incorrect OTP to complete the payment.
+- `insufficient_funds` — The customer does not have sufficient funds in the account to complete the payment.
+- `card_declined` — Issuer Bank can decline the card due to multiple checks at their end. The exact reason in this case is not shared with Razorpay. Customer needs to reach out to the issuing bank.
+- `gateway_technical_error` — Payment failed due to a technical error at the gateway. This usually occurs when the gateway server encounters a technical error while processing the payment.
+
