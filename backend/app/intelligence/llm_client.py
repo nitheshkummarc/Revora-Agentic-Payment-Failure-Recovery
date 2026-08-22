@@ -1,0 +1,319 @@
+"""LLM client and Intelligence Layer entry point (Module 4).
+
+Two things live here:
+
+* `AnthropicLLMClient` -- a thin wrapper over the Anthropic Messages API using
+  the provider's native structured-output feature (`messages.parse` with a
+  Pydantic model), so valid JSON is guaranteed by the API rather than coaxed
+  out with a "please output JSON" instruction and a regex.
+
+* `IntelligenceLayer` -- the module's public entry point. It sanitizes, decides
+  whether the LLM should be consulted at all, and applies the deterministic
+  safety guard on the way out.
+
+**Every call is fresh.** No conversation state is kept between events, ever.
+GROUND_TRUTH.md Day 5-6 flags context-window decay across a batch run as a real
+risk for exactly this kind of loop, so `recommend()` builds a brand-new
+single-message request each time and keeps no history attribute to accumulate
+into.
+
+**This module never touches the gateway.** The LLM's output is a recommendation
+only; PolicyEngine (Module 5) and the Orchestrator (Module 6) are the only
+modules allowed to act on it.
+"""
+
+from __future__ import annotations
+
+import os
+from datetime import datetime, timezone
+from typing import Callable, List, Optional, Protocol
+
+from app.core.logging import get_logger, log_event
+from app.intelligence.prompts import SYSTEM_PROMPT, build_user_content
+from app.intelligence.sanitizer import sanitize_customer_note
+from app.intelligence.schemas import (
+    MONEY_MOVING_ACTIONS,
+    IntelligenceDecision,
+    IntelligenceInput,
+    LLMRecommendation,
+    RecommendedAction,
+)
+
+logger = get_logger("intelligence")
+
+#: Per the claude-api reference: current default model.
+DEFAULT_MODEL = "claude-opus-5"
+DEFAULT_MAX_TOKENS = 2048
+
+
+class LLMClient(Protocol):
+    """Minimal contract the Intelligence Layer needs from a provider."""
+
+    model: str
+
+    def recommend(self, system_prompt: str, user_content: str) -> LLMRecommendation:
+        """One stateless call. Must return a validated LLMRecommendation."""
+        ...
+
+
+class LLMUnavailableError(RuntimeError):
+    """The provider could not be reached or returned an unusable response."""
+
+
+class AnthropicLLMClient:
+    """Anthropic Messages API client using native structured outputs."""
+
+    def __init__(
+        self,
+        model: str = DEFAULT_MODEL,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+        api_key: Optional[str] = None,
+        client: Optional[object] = None,
+    ) -> None:
+        self.model = model
+        self.max_tokens = max_tokens
+        if client is not None:
+            self._client = client
+            return
+        try:
+            import anthropic  # imported lazily: the rest of RecoverX runs without it
+        except ImportError as exc:  # pragma: no cover - depends on environment
+            raise LLMUnavailableError(
+                "the `anthropic` package is not installed; install it or pass a "
+                "different LLMClient implementation"
+            ) from exc
+        key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        self._client = anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic()
+
+    def recommend(self, system_prompt: str, user_content: str) -> LLMRecommendation:
+        # A brand-new single-message request. Nothing from any previous event is
+        # carried in -- there is deliberately no self._history to append to.
+        response = self._client.messages.parse(
+            model=self.model,
+            max_tokens=self.max_tokens,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_content}],
+            output_format=LLMRecommendation,
+        )
+        parsed = getattr(response, "parsed_output", None)
+        if not isinstance(parsed, LLMRecommendation):
+            raise LLMUnavailableError(
+                "structured output did not validate against LLMRecommendation"
+            )
+        return parsed
+
+
+class StubLLMClient:
+    """Deterministic offline client for tests and for demoing without a key.
+
+    Records every call so tests can assert that each event got a fresh,
+    single-message request with no accumulated history.
+    """
+
+    def __init__(
+        self,
+        recommendation: Optional[LLMRecommendation] = None,
+        responder: Optional[Callable[[str, str], LLMRecommendation]] = None,
+        model: str = "stub-model",
+    ) -> None:
+        self.model = model
+        self._recommendation = recommendation or LLMRecommendation(
+            recommended_action=RecommendedAction.RETRY_SOFT,
+            confidence=0.8,
+            reasoning="stub: transient failure, a single soft retry is reasonable",
+        )
+        self._responder = responder
+        self.calls: List[dict] = []
+
+    def recommend(self, system_prompt: str, user_content: str) -> LLMRecommendation:
+        self.calls.append({"system": system_prompt, "user": user_content})
+        if self._responder is not None:
+            return self._responder(system_prompt, user_content)
+        return self._recommendation.model_copy(deep=True)
+
+
+class ExplodingLLMClient:
+    """Raises if called at all. Used to prove the ambiguity short-circuit never
+    reaches the LLM, rather than merely asserting a boolean flag."""
+
+    model = "must-not-be-called"
+
+    def recommend(self, system_prompt: str, user_content: str) -> LLMRecommendation:
+        raise AssertionError(
+            "the LLM must not be consulted for an ambiguous trace -- "
+            "GROUND_TRUTH.md Day 3-4: never let the LLM guess in place of missing data"
+        )
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class IntelligenceLayer:
+    """Turns a tracer result into a recommended recovery action."""
+
+    def __init__(
+        self,
+        llm_client: Optional[LLMClient] = None,
+        clock: Optional[Callable[[], datetime]] = None,
+    ) -> None:
+        self._client = llm_client
+        self._clock = clock or _utcnow
+
+    def recommend(self, request: IntelligenceInput) -> IntelligenceDecision:
+        now = request.decided_at or self._clock()
+
+        # ------------------------------------------------------------------
+        # 1. Sanitize FIRST, unconditionally.
+        #    This is context construction, not a branch of the decision: the
+        #    note is sanitized and injection-flagged even when the LLM is never
+        #    called, so the audit trail is complete either way.
+        # ------------------------------------------------------------------
+        note, report = sanitize_customer_note(request.customer_note)
+
+        # ------------------------------------------------------------------
+        # 2. Ambiguity short-circuit.
+        #    GROUND_TRUTH.md Day 3-4 / Module 4 prompt requirement 5: if the
+        #    tracer could not build a confident chain, the LLM is NOT asked to
+        #    guess in place of the missing data. No call is made at all.
+        # ------------------------------------------------------------------
+        if request.trace.ambiguous:
+            decision = IntelligenceDecision(
+                payment_id=request.payment_id,
+                recommended_action=RecommendedAction.REQUEST_VERIFICATION,
+                confidence=1.0,
+                reasoning=(
+                    "Tracer reported ambiguous=true, so no LLM call was made. "
+                    "Deterministic short-circuit to REQUEST_VERIFICATION: the "
+                    "payment's status must be confirmed before any recovery "
+                    "action. Tracer ambiguity reasons: "
+                    f"{request.trace.ambiguity_reasons}"
+                ),
+                llm_called=False,
+                short_circuit_reason="tracer_ambiguous",
+                untrusted_customer_note=note,
+                sanitization=report,
+                model=None,
+                decided_at=now,
+            )
+            self._log(decision)
+            return decision
+
+        # ------------------------------------------------------------------
+        # 3. Consult the LLM. Fresh call, tracer output only, note delimited.
+        # ------------------------------------------------------------------
+        if self._client is None:
+            return self._fail_safe(
+                request,
+                note,
+                report,
+                now,
+                reason="no_llm_client_configured",
+            )
+
+        user_content = build_user_content(request.trace, note)
+        try:
+            recommendation = self._client.recommend(SYSTEM_PROMPT, user_content)
+        except AssertionError:
+            raise
+        except Exception as exc:  # provider error, validation error, timeout
+            return self._fail_safe(
+                request, note, report, now, reason=f"llm_call_failed:{exc}"
+            )
+
+        # ------------------------------------------------------------------
+        # 4. Deterministic safety guard.
+        #    The delimited-block prompt design is the primary defence against
+        #    injection; this is the second layer that does not depend on the
+        #    model having obeyed it. If the note looked like an instruction,
+        #    the recommendation is not allowed to move money.
+        # ------------------------------------------------------------------
+        action = recommendation.recommended_action
+        override_reason: Optional[str] = None
+        original_action: Optional[RecommendedAction] = None
+
+        if report.looks_like_instruction:
+            original_action = action
+            override_reason = (
+                "injection_guard: customer note matched instruction-like "
+                f"pattern(s) {report.injection_patterns_flagged}; recommendation "
+                f"overridden from {action.value} to ESCALATE_HUMAN"
+            )
+            action = RecommendedAction.ESCALATE_HUMAN
+
+        decision = IntelligenceDecision(
+            payment_id=request.payment_id,
+            recommended_action=action,
+            confidence=recommendation.confidence,
+            reasoning=recommendation.reasoning,
+            llm_called=True,
+            short_circuit_reason=None,
+            guard_override_reason=override_reason,
+            original_llm_action=original_action,
+            untrusted_customer_note=note,
+            sanitization=report,
+            model=getattr(self._client, "model", None),
+            decided_at=now,
+        )
+        self._log(decision)
+        return decision
+
+    # -- helpers -----------------------------------------------------------
+    def _fail_safe(
+        self,
+        request: IntelligenceInput,
+        note: str,
+        report,
+        now: datetime,
+        *,
+        reason: str,
+    ) -> IntelligenceDecision:
+        """When the LLM cannot be consulted, escalate -- never guess.
+
+        GROUND_TRUTH.md Day 5-6's bar is that an adversarial or broken input
+        produces a rejected action or ESCALATE_HUMAN, never a silently-executed
+        unsafe one. A failed LLM call is exactly that situation.
+        """
+        decision = IntelligenceDecision(
+            payment_id=request.payment_id,
+            recommended_action=RecommendedAction.ESCALATE_HUMAN,
+            confidence=0.0,
+            reasoning=(
+                "No usable LLM recommendation was obtained, so the event is "
+                f"escalated rather than guessed at. Reason: {reason}"
+            ),
+            llm_called=False,
+            short_circuit_reason=reason,
+            untrusted_customer_note=note,
+            sanitization=report,
+            model=getattr(self._client, "model", None) if self._client else None,
+            decided_at=now,
+        )
+        self._log(decision)
+        return decision
+
+    @staticmethod
+    def _log(decision: IntelligenceDecision) -> None:
+        log_event(
+            logger,
+            "recommendation",
+            payment_id=decision.payment_id,
+            action=decision.recommended_action.value,
+            confidence=decision.confidence,
+            llm_called=decision.llm_called,
+            short_circuit_reason=decision.short_circuit_reason,
+            guard_override_reason=decision.guard_override_reason,
+            injection_patterns=decision.sanitization.injection_patterns_flagged,
+        )
+
+
+#: Actions that are never safe to emit from a poisoned input.
+__all__ = [
+    "AnthropicLLMClient",
+    "ExplodingLLMClient",
+    "IntelligenceLayer",
+    "LLMClient",
+    "LLMUnavailableError",
+    "MONEY_MOVING_ACTIONS",
+    "StubLLMClient",
+]

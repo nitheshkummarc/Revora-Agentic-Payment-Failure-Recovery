@@ -43,7 +43,7 @@ ever reaches the gateway through the PolicyEngine.
 | 1 | MockPaymentGateway + ChaosInjector | Built |
 | 2 | StateMachine / StateResolver | Built |
 | 3 | FailurePropagationTracer | Built |
-| 4 | Intelligence Layer | Not started |
+| 4 | Intelligence Layer | Built |
 | 5 | PolicyEngine | Not started |
 | 6 | AgentOrchestrator | Not started |
 | 7 | Synthetic dataset generator | Not started |
