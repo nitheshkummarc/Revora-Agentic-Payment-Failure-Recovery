@@ -84,7 +84,7 @@ Two boundaries are enforced structurally rather than by convention:
 | Failure propagation tracer | Built | 22 |
 | Recommendation layer | Built | 43 |
 | Policy engine | Built | 50 |
-| Orchestrator + verify | Not started | — |
+| Orchestrator + verify | Built | 17 |
 | Synthetic dataset generator | Not started | — |
 | Dashboard | Not started | — |
 

@@ -1,0 +1,166 @@
+{
+  "batch_run_id": "8ed2a708-1251-442f-b9cd-4b0bb3c3c6b2",
+  "summary": {
+    "batch_run_id": "8ed2a708-1251-442f-b9cd-4b0bb3c3c6b2",
+    "started_at": "2026-04-21T10:10:00Z",
+    "finished_at": "2026-04-21T10:10:00Z",
+    "total_events": 3,
+    "recovered": 1,
+    "blocked": 1,
+    "escalated": 1,
+    "needs_review": 0,
+    "no_action": 0
+  },
+  "events": [
+    {
+      "batch_run_id": "8ed2a708-1251-442f-b9cd-4b0bb3c3c6b2",
+      "payment_id": "pay_1",
+      "amount": 50000,
+      "currency": "INR",
+      "outcome": "recovered",
+      "failed_stage": null,
+      "needs_review_reason": null,
+      "resolved_state": "FAILED",
+      "resolution_reason": "clean_single_event",
+      "resolution_confidence": 1.0,
+      "root_cause": "Failure at step: payment_authentication, source: customer, reason: incorrect_otp",
+      "causal_chain": [
+        "evt_pay_1_1"
+      ],
+      "trace_confidence": 1.0,
+      "ambiguous": false,
+      "ambiguity_reasons": [],
+      "recommended_action": "RETRY_SOFT",
+      "llm_called": true,
+      "recommendation_confidence": 0.9,
+      "reasoning": "retryable",
+      "injection_patterns_flagged": [],
+      "approved": true,
+      "final_action": "RETRY_SOFT",
+      "blocked_reason": null,
+      "rule_id": null,
+      "execution": {
+        "action": "RETRY_SOFT",
+        "gateway_called": true,
+        "calls": [
+          "GET /payments/{id}/status",
+          "POST /webhooks/simulate (payment.authorized)",
+          "POST /payments/capture"
+        ],
+        "expected_state": "CAPTURED",
+        "detail": "re-attempted the payment and captured it",
+        "cooldown_until": null,
+        "succeeded": true,
+        "reconciled": null
+      },
+      "verification": {
+        "performed": true,
+        "expected_state": "CAPTURED",
+        "observed_state": "CAPTURED",
+        "matched": true,
+        "detail": "post-action state CAPTURED matches the expected CAPTURED"
+      },
+      "processed_at": "2026-04-21T10:10:00Z"
+    },
+    {
+      "batch_run_id": "8ed2a708-1251-442f-b9cd-4b0bb3c3c6b2",
+      "payment_id": "pay_2",
+      "amount": 250000,
+      "currency": "INR",
+      "outcome": "escalated",
+      "failed_stage": null,
+      "needs_review_reason": null,
+      "resolved_state": "PENDING_WEBHOOK",
+      "resolution_reason": "silence_threshold_exceeded",
+      "resolution_confidence": 0.3,
+      "root_cause": "Undetermined root cause for state PENDING_WEBHOOK: no error object with source/step/reason was delivered for this payment (no_delivered_events). A status-endpoint query is required before any recovery action.",
+      "causal_chain": [],
+      "trace_confidence": 0.0,
+      "ambiguous": true,
+      "ambiguity_reasons": [
+        "no_delivered_events: the payment has no webhook evidence at all, so no causal chain can be built",
+        "pending_webhook_state: the resolver could not confirm an outcome from delivered webhooks; a status-endpoint query is required before any recovery action",
+        "ambiguous_resolution_rule: resolver reported 'silence_threshold_exceeded'",
+        "confidence_below_threshold: 0.00 < 0.60"
+      ],
+      "recommended_action": "REQUEST_VERIFICATION",
+      "llm_called": false,
+      "recommendation_confidence": 1.0,
+      "reasoning": "Tracer reported ambiguous=true, so no LLM call was made. Deterministic short-circuit to REQUEST_VERIFICATION: the payment's status must be confirmed before any recovery action. Tracer ambiguity reasons: ['no_delivered_events: the payment has no webhook evidence at all, so no causal chain can be built', 'pending_webhook_state: the resolver could not confirm an outcome from delivered webhooks; a status-endpoint query is required before any recovery action', \"ambiguous_resolution_rule: resolver reported 'silence_threshold_exceeded'\", 'confidence_below_threshold: 0.00 < 0.60']",
+      "injection_patterns_flagged": [],
+      "approved": true,
+      "final_action": "REQUEST_VERIFICATION",
+      "blocked_reason": null,
+      "rule_id": null,
+      "execution": {
+        "action": "REQUEST_VERIFICATION",
+        "gateway_called": true,
+        "calls": [
+          "GET /payments/{id}/status"
+        ],
+        "expected_state": "FAILED",
+        "detail": "status query returned FAILED, which differs from the resolved PENDING_WEBHOOK but confirms the payment did not succeed; escalated rather than recorded as recovered",
+        "cooldown_until": null,
+        "succeeded": true,
+        "reconciled": false
+      },
+      "verification": {
+        "performed": true,
+        "expected_state": "FAILED",
+        "observed_state": "FAILED",
+        "matched": true,
+        "detail": "post-action state FAILED matches the expected FAILED"
+      },
+      "processed_at": "2026-04-21T10:10:00Z"
+    },
+    {
+      "batch_run_id": "8ed2a708-1251-442f-b9cd-4b0bb3c3c6b2",
+      "payment_id": "pay_3",
+      "amount": 90000,
+      "currency": "INR",
+      "outcome": "blocked",
+      "failed_stage": null,
+      "needs_review_reason": null,
+      "resolved_state": "FAILED",
+      "resolution_reason": "clean_single_event",
+      "resolution_confidence": 1.0,
+      "root_cause": "Failure at step: payment_authentication, source: customer, reason: incorrect_otp",
+      "causal_chain": [
+        "evt_pay_3_1"
+      ],
+      "trace_confidence": 1.0,
+      "ambiguous": false,
+      "ambiguity_reasons": [],
+      "recommended_action": "RETRY_SOFT",
+      "llm_called": true,
+      "recommendation_confidence": 0.9,
+      "reasoning": "retryable",
+      "injection_patterns_flagged": [],
+      "approved": false,
+      "final_action": "ESCALATE_HUMAN",
+      "blocked_reason": "MAX_DISCOUNT_EXCEEDED: proposed discount Rs.5,000.00 exceeds MAX_DISCOUNT of Rs.500",
+      "rule_id": "MAX_DISCOUNT_EXCEEDED",
+      "execution": null,
+      "verification": null,
+      "processed_at": "2026-04-21T10:10:00Z"
+    }
+  ],
+  "needs_human_review": [
+    {
+      "payment_id": "pay_2",
+      "amount": 250000,
+      "reason": "Tracer reported ambiguous=true, so no LLM call was made. Deterministic short-circuit to REQUEST_VERIFICATION: the payment's status must be confirmed before any recovery action. Tracer ambiguity reasons: ['no_delivered_events: the payment has no webhook evidence at all, so no causal chain can be built', 'pending_webhook_state: the resolver could not confirm an outcome from delivered webhooks; a status-endpoint query is required before any recovery action', \"ambiguous_resolution_rule: resolver reported 'silence_threshold_exceeded'\", 'confidence_below_threshold: 0.00 < 0.60']",
+      "final_action": "REQUEST_VERIFICATION",
+      "root_cause": "Undetermined root cause for state PENDING_WEBHOOK: no error object with source/step/reason was delivered for this payment (no_delivered_events). A status-endpoint query is required before any recovery action.",
+      "blocked_reason": null
+    },
+    {
+      "payment_id": "pay_3",
+      "amount": 90000,
+      "reason": "MAX_DISCOUNT_EXCEEDED: proposed discount Rs.5,000.00 exceeds MAX_DISCOUNT of Rs.500",
+      "final_action": "ESCALATE_HUMAN",
+      "root_cause": "Failure at step: payment_authentication, source: customer, reason: incorrect_otp",
+      "blocked_reason": "MAX_DISCOUNT_EXCEEDED: proposed discount Rs.5,000.00 exceeds MAX_DISCOUNT of Rs.500"
+    }
+  ]
+}
