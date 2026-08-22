@@ -1,7 +1,7 @@
 """Top-level API router.
 
-Thin aggregator: each module owns its own router and this file only mounts
-them. Modules 2-8 append their routers here as they are built.
+Thin aggregator: each package owns its own router and this file only mounts
+them.
 """
 
 from __future__ import annotations

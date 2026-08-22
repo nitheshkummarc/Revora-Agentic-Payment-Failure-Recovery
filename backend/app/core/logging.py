@@ -1,8 +1,8 @@
-"""Structured logging helpers shared by every RecoverX module.
+"""Structured logging helpers shared by every Revora module.
 
-Everything the system decides has to be reconstructable later for the X-Ray
-audit trail (GROUND_TRUTH.md Day 8-10), so the convention here is: log a dict,
-not an f-string.
+Every decision the system makes has to be reconstructable afterwards for the
+audit trail, so the convention is to log a JSON payload rather than an
+interpolated string.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ def configure_logging(level: int = logging.INFO) -> None:
         return
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
-    root = logging.getLogger("recoverx")
+    root = logging.getLogger("revora")
     root.setLevel(level)
     root.handlers = [handler]
     root.propagate = False
@@ -30,7 +30,7 @@ def configure_logging(level: int = logging.INFO) -> None:
 
 def get_logger(name: str) -> logging.Logger:
     configure_logging()
-    return logging.getLogger(f"recoverx.{name}")
+    return logging.getLogger(f"revora.{name}")
 
 
 def log_event(logger: logging.Logger, message: str, **fields: Any) -> None:
