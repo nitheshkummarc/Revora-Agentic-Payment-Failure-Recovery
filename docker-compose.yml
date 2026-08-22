@@ -1,6 +1,5 @@
-# Single FastAPI process. No database, no message queue, no microservices --
-# see the global "do NOT build" list in RecoverX_Build_Prompts.md.
-# The frontend service is added in Module 8.
+# Single FastAPI process with in-memory state. No database, no message queue,
+# no service split. A frontend service is added alongside the dashboard.
 services:
   backend:
     image: python:3.11-slim
