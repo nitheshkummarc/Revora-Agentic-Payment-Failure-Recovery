@@ -53,25 +53,31 @@ class PolicyEngine:
         recommended = llm_output.recommended_action
         evaluations: List[RuleEvaluation] = []
 
-        def record(rule_id: R.RuleId, violation: Optional[R.Violation]) -> Optional[R.Violation]:
-            evaluations.append(
-                RuleEvaluation(
-                    rule_id=rule_id.value,
-                    passed=violation is None,
-                    detail=violation.detail if violation else None,
-                )
+        # ------------------------------------------------------------------
+        # 1. Opt-out, checked before anything else. Its scope is
+        #    OPT_OUT_BLOCKED_ACTIONS; within that scope nothing overrides it.
+        # ------------------------------------------------------------------
+        opt_out = R.check_opted_out(event_context.opted_out, recommended)
+        evaluations.append(
+            RuleEvaluation(
+                rule_id=R.RuleId.CUSTOMER_OPTED_OUT.value,
+                passed=opt_out is None,
+                detail=(
+                    opt_out.detail
+                    if opt_out
+                    else (
+                        # Recorded even when it does not block, so an audit
+                        # still shows the customer's opt-out status.
+                        f"customer has opted out, but {recommended.value} neither "
+                        "contacts nor charges them and is permitted"
+                        if event_context.opted_out
+                        else None
+                    )
+                ),
             )
-            return violation
-
-        # ------------------------------------------------------------------
-        # 1. Opt-out. Checked first and applies to EVERY action, because
-        #    COOLDOWN_AFTER_OPT_OUT is "permanent" with no override.
-        # ------------------------------------------------------------------
-        violation = record(
-            R.RuleId.CUSTOMER_OPTED_OUT, R.check_opted_out(event_context.opted_out)
         )
-        if violation:
-            return self._blocked(llm_output, event_context, violation, evaluations, now)
+        if opt_out:
+            return self._blocked(llm_output, event_context, opt_out, evaluations, now)
 
         # ------------------------------------------------------------------
         # 2. Non-debiting actions need no RBI gating: they read state or stop.

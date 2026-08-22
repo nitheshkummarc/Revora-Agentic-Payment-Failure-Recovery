@@ -313,15 +313,15 @@ def test_opted_out_is_a_permanent_hard_block(engine):
     assert decision.approved is False
     assert decision.rule_id == "CUSTOMER_OPTED_OUT"
     assert decision.blocked_reason == (
-        "CUSTOMER_OPTED_OUT: customer has opted out; COOLDOWN_AFTER_OPT_OUT is "
-        "'permanent' so this is a hard block with no override, regardless of any "
-        "other field [RBI/DPSS/2026-27/396]"
+        "CUSTOMER_OPTED_OUT: customer has opted out; cooldown is 'permanent', so "
+        "RETRY_SOFT is blocked with no override, regardless of any other field "
+        "[RBI/DPSS/2026-27/396]"
     )
     assert decision.final_action is RecommendedAction.NO_ACTION_COOLDOWN
 
 
 def test_opted_out_blocks_even_a_fully_compliant_event(engine):
-    """"No override" means no other field can rescue it."""
+    """No combination of other fields rescues a blocked action."""
     decision = engine.validate(
         llm(),
         context(
@@ -336,13 +336,68 @@ def test_opted_out_blocks_even_a_fully_compliant_event(engine):
     assert decision.rule_id == "CUSTOMER_OPTED_OUT"
 
 
-@pytest.mark.parametrize("action", list(RecommendedAction))
-def test_opted_out_blocks_every_action_type(engine, action):
-    """Read strictly: nothing at all happens for an opted-out customer."""
-    decision = engine.validate(llm(action), context(opted_out=True))
+def test_opted_out_blocks_request_verification(engine):
+    """REQUEST_VERIFICATION continues the recovery workflow, so an opt-out
+    ends it."""
+    decision = engine.validate(
+        llm(RecommendedAction.REQUEST_VERIFICATION), context(opted_out=True)
+    )
     assert decision.approved is False
     assert decision.rule_id == "CUSTOMER_OPTED_OUT"
     assert decision.final_action is RecommendedAction.NO_ACTION_COOLDOWN
+
+
+@pytest.mark.parametrize(
+    "action",
+    [RecommendedAction.ESCALATE_HUMAN, RecommendedAction.NO_ACTION_COOLDOWN],
+)
+def test_opted_out_permits_actions_that_end_the_workflow(engine, action):
+    """Neither contacts nor charges the customer. Blocking ESCALATE_HUMAN would
+    strip human oversight; blocking NO_ACTION_COOLDOWN would substitute the
+    same no-op while inflating the blocked-action count."""
+    decision = engine.validate(llm(action), context(opted_out=True))
+
+    assert decision.approved is True
+    assert decision.final_action is action
+    assert decision.blocked_reason is None
+
+
+def test_opt_out_status_is_recorded_even_when_it_does_not_block(engine):
+    """An audit must still show the customer opted out."""
+    decision = engine.validate(
+        llm(RecommendedAction.ESCALATE_HUMAN), context(opted_out=True)
+    )
+    opt_out = next(
+        e for e in decision.rules_evaluated if e.rule_id == "CUSTOMER_OPTED_OUT"
+    )
+    assert opt_out.passed is True
+    assert "customer has opted out" in opt_out.detail
+
+
+OPT_OUT_MATRIX = {
+    RecommendedAction.RETRY_SOFT: False,
+    RecommendedAction.REQUEST_VERIFICATION: False,
+    RecommendedAction.ESCALATE_HUMAN: True,
+    RecommendedAction.NO_ACTION_COOLDOWN: True,
+}
+
+
+@pytest.mark.parametrize("action,expected_approved", sorted(OPT_OUT_MATRIX.items()))
+def test_opt_out_outcome_is_pinned_for_every_action(engine, action, expected_approved):
+    """Full enum coverage so the scope decision cannot drift silently."""
+    decision = engine.validate(llm(action), context(opted_out=True))
+    assert decision.approved is expected_approved
+    if expected_approved:
+        assert decision.final_action is action
+    else:
+        assert decision.final_action is RecommendedAction.NO_ACTION_COOLDOWN
+        assert decision.rule_id == "CUSTOMER_OPTED_OUT"
+
+
+def test_opt_out_scope_is_the_two_workflow_continuing_actions():
+    assert R.OPT_OUT_BLOCKED_ACTIONS == frozenset(
+        {RecommendedAction.RETRY_SOFT, RecommendedAction.REQUEST_VERIFICATION}
+    )
 
 
 # --------------------------------------------------------------------------
@@ -516,3 +571,104 @@ def test_validation_is_deterministic(engine):
 def test_event_context_rejects_unknown_fields():
     with pytest.raises(ValueError):
         EventContext(payment_id="pay_1", amount=1000, mandate_ceiling_rupees=500)
+
+
+# --------------------------------------------------------------------------
+# TRACE_CONFIDENCE_BELOW_THRESHOLD reachability
+#
+# The rule cannot fire on the normal pipeline. These tests prove both halves
+# of that claim: the comparison itself is correct when invoked directly, and
+# the pipeline genuinely never invokes it.
+# --------------------------------------------------------------------------
+def test_trace_confidence_rule_logic_is_correct_when_invoked_directly():
+    """Exercised at the rule level, since the pipeline never reaches it."""
+    assert R.check_trace_confidence(R.MINIMUM_TRACE_CONFIDENCE) is None
+    violation = R.check_trace_confidence(0.30)
+    assert violation is not None
+    assert violation.rule_id is R.RuleId.TRACE_CONFIDENCE_BELOW_THRESHOLD
+    assert violation.final_action is RecommendedAction.ESCALATE_HUMAN
+    assert "0.30" in violation.detail
+
+
+def test_tracer_marks_every_low_confidence_result_ambiguous():
+    """First link: a confidence below the threshold always sets ambiguous."""
+    from app.tracer.tracer import CONFIDENCE_AMBIGUITY_THRESHOLD
+
+    assert CONFIDENCE_AMBIGUITY_THRESHOLD == R.MINIMUM_TRACE_CONFIDENCE
+
+
+def test_low_confidence_never_reaches_the_rule_through_the_pipeline():
+    """Second link: an ambiguous trace is short-circuited to a non-debiting
+    action, and the engine returns before value rules run."""
+    from app.intelligence.llm_client import ExplodingLLMClient, IntelligenceLayer
+    from app.intelligence.schemas import IntelligenceInput
+    from app.state_machine.states import CanonicalState
+    from app.tracer.schemas import TraceResult
+
+    low_confidence_trace = TraceResult(
+        payment_id="pay_1",
+        root_cause="Undetermined root cause for state PENDING_WEBHOOK",
+        causal_chain=[],
+        confidence=0.10,
+        ambiguous=True,
+        ambiguity_reasons=["confidence_below_threshold: 0.10 < 0.60"],
+        chain_completeness=0.0,
+        error_grounding=0.0,
+        inherited_resolution_confidence=1.0,
+        resolved_state=CanonicalState.PENDING_WEBHOOK,
+        resolution_reason="silence_threshold_exceeded",
+        traced_at=NOW,
+    )
+
+    # The model is never consulted for an ambiguous trace.
+    layer = IntelligenceLayer(llm_client=ExplodingLLMClient())
+    recommendation = layer.recommend(
+        IntelligenceInput(
+            payment_id="pay_1", trace=low_confidence_trace, decided_at=NOW
+        )
+    )
+    assert recommendation.recommended_action is RecommendedAction.REQUEST_VERIFICATION
+    assert recommendation.recommended_action not in R.DEBITING_ACTIONS
+
+    decision = PolicyEngine(clock=lambda: NOW).validate(
+        recommendation, context(trace_confidence=0.10)
+    )
+
+    # Approved as a non-debiting action, and the confidence rule was never
+    # evaluated -- the engine returned before the value rules.
+    assert decision.approved is True
+    evaluated = {e.rule_id for e in decision.rules_evaluated}
+    assert "TRACE_CONFIDENCE_BELOW_THRESHOLD" not in evaluated
+
+
+def test_a_debiting_action_can_only_carry_confidence_at_or_above_threshold():
+    """The invariant the two links above combine to produce."""
+    from app.intelligence.llm_client import IntelligenceLayer, StubLLMClient
+    from app.intelligence.schemas import IntelligenceInput
+    from app.state_machine.states import CanonicalState
+    from app.tracer.schemas import TraceResult
+
+    layer = IntelligenceLayer(llm_client=StubLLMClient())
+    for confidence in (0.0, 0.25, 0.59, 0.60, 0.85, 1.0):
+        ambiguous = confidence < R.MINIMUM_TRACE_CONFIDENCE
+        trace = TraceResult(
+            payment_id="pay_1",
+            root_cause="Failure at step: payment_authentication, source: customer, reason: incorrect_otp",
+            causal_chain=["evt_pay_1_1"],
+            confidence=confidence,
+            ambiguous=ambiguous,
+            ambiguity_reasons=[],
+            chain_completeness=1.0,
+            error_grounding=1.0,
+            inherited_resolution_confidence=1.0,
+            resolved_state=CanonicalState.FAILED,
+            resolution_reason="clean_single_event",
+            traced_at=NOW,
+        )
+        result = layer.recommend(
+            IntelligenceInput(payment_id="pay_1", trace=trace, decided_at=NOW)
+        )
+        if result.recommended_action in R.DEBITING_ACTIONS:
+            assert confidence >= R.MINIMUM_TRACE_CONFIDENCE, (
+                f"a debiting action escaped with confidence {confidence}"
+            )

@@ -81,6 +81,31 @@ RBI_CIRCULAR = "RBI/DPSS/2026-27/396"
 #: these are gated on the RBI fields; the rest read state or stop.
 DEBITING_ACTIONS = frozenset({RecommendedAction.RETRY_SOFT})
 
+#: Actions an opt-out blocks.
+#:
+#: Design choice, deliberately narrower than "every action":
+#:
+#:   RETRY_SOFT           blocked -- re-attempts the customer's payment.
+#:   REQUEST_VERIFICATION blocked -- continues the recovery workflow; its
+#:                        follow-through reconciles or escalates onward, which
+#:                        is exactly the activity an opt-out ends.
+#:   ESCALATE_HUMAN       permitted -- terminates the automated path and hands
+#:                        the case to a reviewer. It neither contacts nor
+#:                        charges the customer, and blocking it would remove
+#:                        human oversight from the one population most in need
+#:                        of it.
+#:   NO_ACTION_COOLDOWN   permitted -- already the outcome the opt-out rule
+#:                        wants. Blocking a no-op only to substitute the same
+#:                        no-op changes nothing operationally, while inflating
+#:                        the blocked-action count that the batch report
+#:                        presents as evidence the guardrail works.
+#:
+#: The opt-out is still recorded on every decision either way, so an audit
+#: shows the customer's status even when the action was permitted.
+OPT_OUT_BLOCKED_ACTIONS = frozenset(
+    {RecommendedAction.RETRY_SOFT, RecommendedAction.REQUEST_VERIFICATION}
+)
+
 
 class RuleId(str, Enum):
     """Every rule that can block. The value is what appears in
@@ -133,22 +158,26 @@ def _rupees(paise: int) -> str:
 # Individual rules. Each returns a Violation or None.
 # Each takes the already-validated context; none of them reach outside.
 # --------------------------------------------------------------------------
-def check_opted_out(opted_out: bool) -> Optional[Violation]:
-    """COOLDOWN_AFTER_OPT_OUT = "permanent" -- hard block, no override.
+def check_opted_out(
+    opted_out: bool, recommended_action: RecommendedAction
+) -> Optional[Violation]:
+    """Permanent cooldown for opted-out customers, with no override.
 
-    Deliberately blocks EVERY action, not just debiting ones. "No override"
-    is read strictly: nothing at all happens for an opted-out customer. That
-    is the stricter direction, which is the defensible one for a compliance
-    claim.
+    Scope is governed by OPT_OUT_BLOCKED_ACTIONS: the block covers every action
+    that would continue the recovery workflow, and permits the two that end it
+    without touching the customer. Within its scope there is no override -- no
+    combination of other fields can rescue a blocked action.
     """
     if not opted_out:
+        return None
+    if recommended_action not in OPT_OUT_BLOCKED_ACTIONS:
         return None
     return Violation(
         rule_id=RuleId.CUSTOMER_OPTED_OUT,
         detail=(
-            "customer has opted out; COOLDOWN_AFTER_OPT_OUT is "
-            f"'{COOLDOWN_AFTER_OPT_OUT}' so this is a hard block with no override, "
-            "regardless of any other field"
+            f"customer has opted out; cooldown is '{COOLDOWN_AFTER_OPT_OUT}', so "
+            f"{recommended_action.value} is blocked with no override, regardless "
+            "of any other field"
         ),
         final_action=RecommendedAction.NO_ACTION_COOLDOWN,
         cites_rbi=True,
@@ -306,8 +335,25 @@ def check_max_retries(retry_count: int) -> Optional[Violation]:
 
 
 def check_trace_confidence(trace_confidence: float) -> Optional[Violation]:
-    """See MINIMUM_TRACE_CONFIDENCE above -- Day 3-4 mitigation, RecoverX-chosen
-    threshold, defence-in-depth."""
+    """Reject an autonomous recovery whose diagnosis is not confident enough.
+
+    UNREACHABLE ON THE NORMAL PIPELINE -- a backstop, not an independently
+    exercised rule. The chain that makes it unreachable:
+
+        tracer sets ambiguous=True whenever confidence < 0.60
+          -> the intelligence layer short-circuits every ambiguous trace to
+             REQUEST_VERIFICATION without consulting the model
+          -> REQUEST_VERIFICATION is not a debiting action
+          -> the engine returns before value rules are evaluated
+
+    So a debiting action can only arrive here carrying a confidence at or above
+    the tracer's own ambiguity threshold, and the comparison below can never be
+    true. It is retained because that guarantee lives in two other modules: if
+    either threshold moves, or a caller assembles a recommendation without
+    going through the intelligence layer, this catches what the chain no longer
+    does. The logic is exercised directly by tests rather than through the
+    pipeline.
+    """
     if trace_confidence >= MINIMUM_TRACE_CONFIDENCE:
         return None
     return Violation(
