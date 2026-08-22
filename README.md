@@ -42,7 +42,7 @@ ever reaches the gateway through the PolicyEngine.
 |---|---|---|
 | 1 | MockPaymentGateway + ChaosInjector | Built |
 | 2 | StateMachine / StateResolver | Built |
-| 3 | FailurePropagationTracer | Not started |
+| 3 | FailurePropagationTracer | Built |
 | 4 | Intelligence Layer | Not started |
 | 5 | PolicyEngine | Not started |
 | 6 | AgentOrchestrator | Not started |
