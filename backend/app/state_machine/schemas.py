@@ -1,14 +1,14 @@
-"""Schemas for the StateResolver (Module 2).
+"""Schemas for state resolution.
 
-The input schema (`PaymentObservation`) is the trust boundary of this module.
-It deliberately carries NO field that can hold the gateway's internal
-ground-truth state: only delivered webhook events plus the two timestamps
-needed to evaluate the silence threshold. The resolver therefore cannot peek
-at gateway truth even by accident -- resolving from incomplete evidence is the
-whole premise, and a field that could carry the answer would defeat it.
+`PaymentObservation` is this package's trust boundary. It deliberately carries
+no field that can hold the gateway's internal state: only delivered webhook
+events plus the two timestamps needed to evaluate the silence threshold. The
+resolver therefore cannot read gateway truth even by accident -- resolving from
+incomplete evidence is the whole premise, and a field that could carry the
+answer would defeat it.
 
-Every model sets extra="forbid", same rationale as Module 1: a shape mismatch
-must throw rather than silently pass through.
+Every model sets extra="forbid", so a shape mismatch raises rather than
+silently passing through.
 """
 
 from __future__ import annotations
@@ -30,10 +30,8 @@ class StrictModel(BaseModel):
 class ResolutionRule(str, Enum):
     """Which rule decided the state.
 
-    The three values named in the Module 2 prompt appear here verbatim
-    (`clean_single_event`, `late_authorization_flip`,
-    `silence_threshold_exceeded`) so an auditor grepping for them finds them in
-    `resolution_reason`.
+    The value is what appears in `resolution_reason`, so an audit can trace a
+    resolution back to the rule that produced it.
     """
 
     CLEAN_SINGLE_EVENT = "clean_single_event"
@@ -49,9 +47,8 @@ class ResolutionRule(str, Enum):
 
 
 class ResolutionLogEntry(StrictModel):
-    """One audit-trail line. GROUND_TRUTH.md Day 8-10 requires every stage's
-    reasoning to be reconstructable later; the flip entry in particular is
-    called out by the Module 2 prompt as mattering for the audit trail."""
+    """One audit-trail line. Every stage's reasoning has to be
+    reconstructable later; the flip entry matters most."""
 
     rule: str
     message: str
@@ -81,7 +78,6 @@ class StateResolution(StrictModel):
     state: CanonicalState
     needs_status_check: bool = False
 
-    # Required by Module 2 prompt requirement 3.
     resolution_confidence: float = Field(ge=0.0, le=1.0)
     resolution_reason: ResolutionRule
 

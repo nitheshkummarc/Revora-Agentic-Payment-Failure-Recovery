@@ -1,15 +1,14 @@
-"""Pydantic schemas for the MockPaymentGateway (Module 1).
+"""Pydantic schemas for the mock payment gateway.
 
-Field names are taken verbatim from GROUND_TRUTH.md (Day 0, "Real error object
-schema" and "Real webhook events to model"). Nothing here is invented: where
-GROUND_TRUTH.md does not document a closed set of values (e.g. `step`, `code`),
-the field is typed as a free string rather than a guessed enum, so that the
-dataset generator in Module 7 is forced to supply real values instead of
-picking from a fabricated list.
+Field names mirror Razorpay's published error and webhook payloads exactly.
+Where Razorpay does not publish a closed set of values -- `step` and `code`
+being the notable cases -- the field is typed as a free string rather than a
+guessed enum, so callers must supply real values rather than pick from an
+invented list.
 
-Every model sets extra="forbid" -- GROUND_TRUTH.md Day 1-2 lists "schema drift
-in tool calls" as a known failure mode, with the mitigation being that a shape
-mismatch must throw rather than silently pass through.
+Every model sets extra="forbid". Silent schema drift, where a renamed field is
+accepted as a malformed-but-plausible payload, is the failure this guards
+against: a shape mismatch raises instead of propagating.
 """
 
 from __future__ import annotations
@@ -28,8 +27,8 @@ class StrictModel(BaseModel):
 
 
 # --------------------------------------------------------------------------
-# Canonical states -- GROUND_TRUTH.md Day 1-2:
-# "CREATED -> AUTHORIZED -> CAPTURED / FAILED / PENDING_WEBHOOK / REVERSED"
+# Canonical payment states:
+# CREATED -> AUTHORIZED -> CAPTURED / FAILED / PENDING_WEBHOOK / REVERSED
 # --------------------------------------------------------------------------
 class PaymentState(str, Enum):
     CREATED = "CREATED"
@@ -41,11 +40,10 @@ class PaymentState(str, Enum):
 
 
 class SubscriptionState(str, Enum):
-    """Only states traceable to GROUND_TRUTH.md's documented subscription
-    webhook event names (subscription.activated, subscription.pending,
-    subscription.halted) plus the initial CREATED. Razorpay's full
-    subscription status list is deliberately NOT reproduced here, because
-    GROUND_TRUTH.md does not enumerate it."""
+    """States reachable from the subscription webhook events this gateway
+    models, plus the initial CREATED. Razorpay's full subscription status list
+    is deliberately not reproduced -- only states the modelled events can
+    actually produce are represented."""
 
     CREATED = "CREATED"
     ACTIVE = "ACTIVE"
@@ -54,9 +52,9 @@ class SubscriptionState(str, Enum):
 
 
 # --------------------------------------------------------------------------
-# Webhook event names -- GROUND_TRUTH.md Day 0, "Real webhook events to model
-# (use these exact names)". All eleven are listed; the gateway only produces
-# transitions for the ones it models.
+# Razorpay webhook event names, spelled exactly as the platform emits them.
+# All eleven are listed; the gateway produces state transitions only for the
+# subset it models.
 # --------------------------------------------------------------------------
 class WebhookEventName(str, Enum):
     PAYMENT_AUTHORIZED = "payment.authorized"
@@ -95,11 +93,10 @@ SUBSCRIPTION_EVENTS = frozenset(
 
 
 # --------------------------------------------------------------------------
-# Error object -- GROUND_TRUTH.md Day 0, verbatim field names.
+# Error object, using Razorpay's field names verbatim.
 # --------------------------------------------------------------------------
 class ErrorSource(str, Enum):
-    """GROUND_TRUTH.md Day 0: source = who caused it
-    (customer / bank / gateway / business / network)."""
+    """Who caused the failure, as attributed by the gateway."""
 
     CUSTOMER = "customer"
     BANK = "bank"
@@ -111,8 +108,8 @@ class ErrorSource(str, Enum):
 class ErrorObject(StrictModel):
     code: str
     description: str
-    # GROUND_TRUTH.md's example carries field="otp"; Razorpay omits/nulls it
-    # for errors not attributable to a single field.
+    # Populated when the failure is attributable to one input field (for
+    # example "otp"); omitted otherwise.
     field: Optional[str] = None
     source: ErrorSource
     step: str
@@ -121,16 +118,15 @@ class ErrorObject(StrictModel):
 
 
 class ErrorEnvelope(StrictModel):
-    """The wire shape from GROUND_TRUTH.md: {"error": {...}}."""
+    """The wire shape Razorpay returns: {"error": {...}}."""
 
     error: ErrorObject
 
 
-# The ONLY error object hardcoded in this module. It is copied verbatim from
-# GROUND_TRUTH.md Day 0's example so that nothing here is a fabricated
-# Razorpay error code. Callers that need any other failure must pass their own
-# error object explicitly -- the gateway will not guess one.
-GROUND_TRUTH_EXAMPLE_ERROR = ErrorObject(
+# The only error object hardcoded in this module, reproducing a documented
+# Razorpay example so that no error code here is invented. Callers needing any
+# other failure must pass their own error object; the gateway never guesses.
+DOCUMENTED_EXAMPLE_ERROR = ErrorObject(
     code="BAD_REQUEST_ERROR",
     description="Payment failed due to incorrect OTP",
     field="otp",
@@ -145,9 +141,9 @@ GROUND_TRUTH_EXAMPLE_ERROR = ErrorObject(
 # Chaos configuration
 # --------------------------------------------------------------------------
 class ChaosMode(str, Enum):
-    """GROUND_TRUTH.md Day 1-2: delayed webhook (0-45s), duplicate webhook,
-    out-of-order webhook, silent drop (never fires), and the documented
-    Failed->Authorized flip."""
+    """The five delivery faults this gateway can inject: a delayed webhook, a
+    duplicate delivery, out-of-order delivery, a silent drop where the webhook
+    never fires, and the documented Failed-to-Authorized flip."""
 
     DELAYED_WEBHOOK = "delayed_webhook"
     DUPLICATE_WEBHOOK = "duplicate_webhook"
@@ -157,12 +153,11 @@ class ChaosMode(str, Enum):
 
 
 class ChaosConfig(StrictModel):
-    """Per-request chaos flag (GROUND_TRUTH.md Day 1-2: "Inject chaos via a
-    config flag per request")."""
+    """Per-request selection of which delivery faults to inject."""
 
     modes: List[ChaosMode] = Field(default_factory=list)
-    # The 0-45s window is documented; validated here so an out-of-range value
-    # is rejected rather than silently clamped.
+    # Bounded to the documented 0-45s window; an out-of-range value is
+    # rejected rather than silently clamped.
     delay_seconds: float = Field(default=0.0, ge=0.0, le=45.0)
     # How long after the FAILED event the documented late AUTHORIZED arrives.
     flip_after_seconds: float = Field(default=30.0, ge=0.0, le=45.0)
@@ -176,8 +171,8 @@ class ChaosConfig(StrictModel):
 class WebhookEvent(StrictModel):
     """One webhook delivery as the merchant would observe it.
 
-    `sequence` + `occurred_at` are what downstream modules must order by --
-    GROUND_TRUTH.md Day 1-2 is explicit that arrival order must NOT be used.
+    Consumers must order by `sequence` and `occurred_at`. Arrival order is
+    unreliable under delayed and out-of-order delivery and must not be used.
     """
 
     event_id: str
@@ -187,7 +182,7 @@ class WebhookEvent(StrictModel):
     sequence: int
     # When the gateway actually made the state change.
     occurred_at: datetime
-    # GROUND_TRUTH.md Days 11-13 names these two fields for the delay bucket.
+    # The gap between these two is what a delayed delivery looks like.
     webhook_sent_at: datetime
     webhook_received_at: datetime
     delivery_attempt: int = 1
@@ -198,7 +193,7 @@ class WebhookEvent(StrictModel):
 
 
 class TransitionLogEntry(StrictModel):
-    """The "log of *why*" required by the Day 1-2 deliverable."""
+    """One entry explaining why a transition was or was not applied."""
 
     entity_id: str
     event_id: Optional[str] = None
@@ -212,7 +207,8 @@ class TransitionLogEntry(StrictModel):
 
 
 class DeliveryAttemptLogEntry(StrictModel):
-    """Infra-level (HTTP) retry log -- NOT payment-recovery retry."""
+    """Transport-level delivery attempt. Distinct from payment-recovery
+    retry, which is a business decision made further up the pipeline."""
 
     event_id: str
     attempt: int
@@ -230,14 +226,15 @@ class PaymentRecord(StrictModel):
     order_id: Optional[str] = None
     amount: int  # paise -- Razorpay's integer-paise convention (50000 = Rs.500)
     currency: str = "INR"
-    # What the gateway itself knows to be true. GET /payments/{id}/status
-    # returns this -- a status query hits the gateway directly and is therefore
-    # unaffected by webhook chaos. This is what makes a status check a real
-    # disambiguation tool for later modules.
+    # What the gateway itself knows to be true. The status endpoint returns
+    # this: a status query reaches the gateway directly and is unaffected by
+    # webhook faults, which is what makes it a genuine way to resolve an
+    # ambiguous case.
     state: PaymentState
     # What a merchant would believe from delivered webhooks alone. Diverges
-    # from `state` under silent-drop / delay chaos. Module 2's resolver works
-    # from the event history, not from this field.
+    # from `state` under silent-drop and delay faults. State resolution works
+    # from the event history rather than this field, which is a lossy fold of
+    # the same evidence.
     webhook_derived_state: PaymentState
     created_at: datetime
     updated_at: datetime
@@ -263,8 +260,8 @@ class CreatePaymentRequest(StrictModel):
     payment_id: Optional[str] = None
     order_id: Optional[str] = None
     subscription_id: Optional[str] = None
-    # Free-text, customer-supplied. Treated as untrusted data everywhere
-    # downstream (Module 4 sanitises it); the gateway only stores it.
+    # Free-text and customer-supplied. Treated as untrusted data everywhere
+    # downstream, where it is sanitised before use; the gateway only stores it.
     notes: Optional[str] = None
 
 
@@ -275,8 +272,8 @@ class CapturePaymentRequest(StrictModel):
 
 class FailPaymentRequest(StrictModel):
     payment_id: str
-    # Optional: when omitted the gateway uses GROUND_TRUTH.md's documented
-    # example error object rather than inventing a code.
+    # When omitted the gateway falls back to a documented example error
+    # object rather than inventing a code.
     error: Optional[ErrorObject] = None
     chaos: Optional[ChaosConfig] = None
 

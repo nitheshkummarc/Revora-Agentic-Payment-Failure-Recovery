@@ -1,10 +1,9 @@
-"""StateResolver (Module 2).
+"""State resolution from merchant-visible evidence.
 
-Given the merchant-visible evidence for one payment -- the delivered webhook
-events plus the payment's creation time -- decide which of the canonical states
-it is actually in, and record which rule fired.
+Given the delivered webhook events for one payment plus its creation time,
+decide which canonical state it is actually in, and record which rule fired.
 
-Two documented Razorpay behaviours drive the design (GROUND_TRUTH.md Day 0):
+Two documented Razorpay behaviours drive the design:
 
 1. A payment can show as Failed because of a bank/Razorpay communication gap
    (or a closed browser tab) and later flip to Authorized when the delayed
@@ -16,11 +15,11 @@ Two documented Razorpay behaviours drive the design (GROUND_TRUTH.md Day 0):
    an absence of one -- but only after enough time has passed. Before
    SILENCE_THRESHOLD_SECONDS the payment is legitimately still in progress and
    is reported as plain CREATED. Flagging earlier would manufacture false
-   ambiguity that Module 3's tracer would then have to explain away.
+   ambiguity that the tracer would then have to explain away.
 
-Scope boundary: this module resolves *what state a payment is in*. It does not
-explain *why* a failure happened -- that is Module 3's FailurePropagationTracer.
-No LLM calls, no policy or recovery decisions.
+Scope boundary: this package resolves what state a payment is in. It does not
+explain why a failure happened -- that is the tracer's job. No model calls, no
+policy or recovery decisions.
 """
 
 from __future__ import annotations
@@ -55,8 +54,8 @@ logger = get_logger("state_machine")
 # documented deduction for each thing that made the evidence harder to read.
 # Every deduction below is a named constant -- no per-event magic numbers.
 #
-# These weights are a RecoverX design choice, not a documented Razorpay or RBI
-# figure. Do not present them to judges as either.
+# These weights are local design choices with no external basis. They are not
+# documented Razorpay or RBI figures and must not be described as such.
 # --------------------------------------------------------------------------
 BASE_CONFIDENCE = 1.0
 
@@ -310,7 +309,7 @@ class StateResolver:
     # -- steps -------------------------------------------------------------
     @staticmethod
     def _dedupe_key(event: WebhookEvent):
-        """Same key Module 1 uses: the event's own identity, never arrival."""
+        """The event's own identity, never its arrival order."""
         return (event.entity_id, event.sequence, event.occurred_at.isoformat())
 
     def _deduplicate(

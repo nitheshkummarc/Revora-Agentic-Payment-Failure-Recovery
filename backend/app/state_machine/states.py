@@ -1,16 +1,13 @@
-"""Canonical states for RecoverX (Module 2).
-
-GROUND_TRUTH.md Day 1-2 defines the canonical state list verbatim:
+"""Canonical payment states used by state resolution.
 
     CREATED -> AUTHORIZED -> CAPTURED / FAILED / PENDING_WEBHOOK / REVERSED
 
-Note on the deliberate duplication with `gateway/schemas.py::PaymentState`:
-these two enums have the same members but model different things and must not
-be merged. `PaymentState` is what a *gateway* holds; `CanonicalState` is what
-the resolver *concludes from evidence*. Module 2 is forbidden from modifying
-gateway files, and collapsing them would also let the resolver import a type
-whose provenance is gateway-internal truth. They are converted explicitly at
-the boundary instead (see `from_event_name`).
+The duplication with `gateway/schemas.py::PaymentState` is deliberate. The two
+enums share members but model different things: `PaymentState` is what a
+gateway holds, `CanonicalState` is what the resolver concludes from evidence.
+Merging them would let the resolver import a type whose provenance is
+gateway-internal truth. They are converted explicitly at the boundary instead
+-- see `from_event_name`.
 """
 
 from __future__ import annotations
@@ -20,13 +17,12 @@ from typing import Dict, FrozenSet, Optional
 
 from app.gateway.schemas import WebhookEventName
 
-# GROUND_TRUTH.md Day 1-2, and Module 2 prompt requirement 2. Configurable:
-# StateResolver accepts an override, this is only the default.
+# Default only; StateResolver accepts an override.
 SILENCE_THRESHOLD_SECONDS: float = 300.0
 
 
 class CanonicalState(str, Enum):
-    """The five/six canonical states, matching GROUND_TRUTH.md exactly."""
+    """The six canonical states a payment can occupy."""
 
     CREATED = "CREATED"
     AUTHORIZED = "AUTHORIZED"
@@ -41,8 +37,7 @@ class CanonicalState(str, Enum):
 # is recorded without changing the resolution.
 #
 # FAILED is deliberately a legal predecessor of AUTHORIZED: that is the
-# documented Razorpay Failed->Authorized flip (GROUND_TRUTH.md Day 0,
-# documented behaviour 1), not corrupted evidence.
+# documented Razorpay Failed-to-Authorized flip, not corrupted evidence.
 _TRANSITIONS: Dict[WebhookEventName, tuple] = {
     WebhookEventName.PAYMENT_AUTHORIZED: (
         frozenset({CanonicalState.CREATED, CanonicalState.PENDING_WEBHOOK, CanonicalState.FAILED}),
@@ -65,9 +60,7 @@ _TRANSITIONS: Dict[WebhookEventName, tuple] = {
     WebhookEventName.PAYMENT_DISPUTE_CREATED: (None, None),
 }
 
-# The three events whose absence defines "silence" for the threshold rule
-# (Module 2 prompt requirement 2: "no `authorized`, `captured`, or `failed`
-# webhook").
+# The three events whose absence defines "silence" for the threshold rule.
 STATE_BEARING_EVENTS: FrozenSet[WebhookEventName] = frozenset(
     {
         WebhookEventName.PAYMENT_AUTHORIZED,

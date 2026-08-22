@@ -1,8 +1,7 @@
-"""MockPaymentGateway (Module 1).
+"""In-memory Razorpay-shaped payment gateway with delivery-fault injection.
 
-An in-memory Razorpay-shaped payment gateway with a chaos injector, built to
-GROUND_TRUTH.md Day 1-2. No database, no real API calls, no signature
-verification (there is no real secret to verify against).
+No database, no real API calls, and no webhook signature verification -- there
+is no real shared secret to verify against.
 
 Three ideas drive the design:
 
@@ -11,12 +10,12 @@ Three ideas drive the design:
    a status check a genuine disambiguation tool for later modules.
    `PaymentRecord.webhook_derived_state` is what a merchant would believe from
    delivered webhooks alone. Under silent-drop or delay chaos the two diverge,
-   and that divergence *is* the ambiguity GROUND_TRUTH.md describes.
+   and that divergence is the ambiguity the pipeline exists to diagnose.
 
 2. The per-entity `event_history` is append-only. Nothing is ever rewritten in
    place -- the Failed->Authorized flip appends a later `payment.authorized`
    entry next to the earlier `payment.failed` one, both timestamped, because
-   Module 2's resolver needs the full chronological timeline.
+   state resolution needs the full chronological timeline.
 
 3. Idempotency keys off (entity_id, sequence, occurred_at) -- an event's own
    timestamp and sequence number, never its arrival order. Replaying the same
@@ -40,7 +39,12 @@ from fastapi import APIRouter, HTTPException, status
 
 from app.core.config import GATEWAY_SETTINGS, GatewaySettings
 from app.core.logging import get_logger, log_event
-from app.gateway.chaos import ChaosInjector, DeliveryPlan, ScheduledDelivery, error_or_ground_truth_default
+from app.gateway.chaos import (
+    ChaosInjector,
+    DeliveryPlan,
+    ScheduledDelivery,
+    error_or_documented_default,
+)
 from app.gateway.schemas import (
     PAYMENT_EVENTS,
     SUBSCRIPTION_EVENTS,
@@ -111,10 +115,9 @@ class WebhookDeliveryClient:
     """Infra-level retry-with-backoff + circuit breaker around our own
     outbound webhook delivery.
 
-    GROUND_TRUTH.md Day 1-2 lists a 3-15% chronic tool-call failure rate as
-    normal production behaviour, with the mitigation being a retry/backoff
-    wrapper with a max-attempts circuit breaker built into the mock layer
-    rather than bolted on later. That is exactly what this is.
+    A 3-15% chronic failure rate is normal for production integrations, so
+    retry with backoff and a max-attempts circuit breaker belong in this layer
+    rather than bolted on later.
 
     Backoff intervals are computed and logged, never slept -- a demo should not
     burn wall-clock time proving that exponential backoff arithmetic works.
@@ -230,8 +233,8 @@ class MockPaymentGateway:
     def _dedupe_key(event: WebhookEvent) -> Tuple[str, int, str]:
         """Idempotency key: entity + event timestamp + sequence.
 
-        Deliberately NOT arrival order -- GROUND_TRUTH.md Day 1-2 requires
-        duplicate detection to key off the event's own timestamp and sequence.
+        Deliberately not arrival order: duplicate detection keys off the
+        event's own timestamp and sequence, which are stable under reordering.
         """
         return (event.entity_id, event.sequence, event.occurred_at.isoformat())
 
@@ -330,7 +333,7 @@ class MockPaymentGateway:
     def fail_payment(self, request: FailPaymentRequest) -> PaymentStatusResponse:
         self.settle()
         record = self._require_payment(request.payment_id)
-        error = error_or_ground_truth_default(request.error)
+        error = error_or_documented_default(request.error)
         allowed, _ = _PAYMENT_TRANSITIONS[WebhookEventName.PAYMENT_FAILED]
         if allowed is not None and record.state not in allowed:
             self._log_transition(
@@ -704,9 +707,8 @@ class MockPaymentGateway:
             to_state=target.value,
         )
 
-        # GROUND_TRUTH.md Day 0/Day 1-2: subscriptions move to halted after
-        # exactly 3 charge-retry attempts. Queued, not emitted inline -- see
-        # _drain_deferred_halts.
+        # Subscriptions halt after exactly three charge-retry attempts.
+        # Queued rather than emitted inline -- see _drain_deferred_halts.
         threshold = self.settings.subscription_halt_after_failed_charges
         if (
             event.event is WebhookEventName.SUBSCRIPTION_PENDING
@@ -787,11 +789,10 @@ class IllegalTransitionError(RuntimeError):
 # --------------------------------------------------------------------------
 # FastAPI router
 #
-# Note on API-level errors: these use FastAPI's plain `detail` shape, NOT the
-# Razorpay error object. GROUND_TRUTH.md defines that schema for *payment*
-# errors, and it does not enumerate `code`/`step`/`reason` values for API
-# plumbing failures. Emitting a Razorpay-shaped error object here would mean
-# inventing values that look real but are not in the ground truth.
+# API-level errors use FastAPI's plain `detail` shape rather than the Razorpay
+# error object. That schema describes payment errors; Razorpay does not publish
+# `code`/`step`/`reason` values for API plumbing failures, so emitting one here
+# would mean inventing values that look real but are not.
 # --------------------------------------------------------------------------
 router = APIRouter(tags=["gateway"])
 

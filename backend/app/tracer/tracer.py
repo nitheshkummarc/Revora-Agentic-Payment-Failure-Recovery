@@ -1,30 +1,28 @@
-"""FailurePropagationTracer (Module 3) -- the differentiator module.
+"""Deterministic root-cause tracing for failed payments.
 
-Given a payment that Module 2 resolved to FAILED or PENDING_WEBHOOK, walk
-backward through its linked event chain to build a causal path, and state the
-root cause in terms of the real Razorpay error fields that are actually on the
-events. Fully deterministic: no LLM, no recovery decisions, no gateway calls.
+Given a payment resolved to FAILED or PENDING_WEBHOOK, walk backward through
+its linked event chain to build a causal path, and state the root cause in
+terms of the Razorpay error fields present on the events themselves. No model
+calls, no recovery decisions, no gateway calls.
 
-Three things make this a diagnosis engine rather than a "read the last error
-code" step:
+Three properties distinguish this from reading the last error code:
 
-1. **Reverse BFS over a real causal graph.** Nodes are individual webhook
+1. Reverse BFS over a real causal graph. Nodes are individual webhook
    delivery attempts, not just events. Edges run backward along two kinds of
    causal link: retry edges (delivery attempt k came after attempt k-1 of the
    same event) and progression edges (this event followed the previous one in
    the payment's life). The walk starts at the terminal node and discovers
    predecessors, so the output is a causal path rather than a flat list.
 
-2. **Root cause is quoted, never paraphrased.** The `root_cause` string embeds
-   the literal `source`, `step` and `reason` values from the event's own error
-   object. A judge can grep the dataset for those strings and land on the
-   originating event. No parallel taxonomy is invented on top of Razorpay's.
+2. Root cause is quoted, never paraphrased. The `root_cause` string embeds the
+   literal `source`, `step` and `reason` values from the event's own error
+   object, so it can be grepped back to the originating event. No parallel
+   taxonomy is invented on top of Razorpay's.
 
-3. **A gap in the chain is reported, never smoothed over.** This is the lesson
-   GROUND_TRUTH.md Day 3-4 draws from the dropped Spark RCA app: returning a
-   shorter chain that *looks* complete is worse than admitting the hole. Any
-   missing telemetry sets `ambiguous: true`, which forces a status-endpoint
-   query before any recovery action can be taken.
+3. A gap in the chain is reported, never smoothed over. Returning a shorter
+   chain that looks complete is worse than admitting the hole, so any missing
+   telemetry sets `ambiguous: true`, forcing a status query before any
+   recovery action can be taken.
 """
 
 from __future__ import annotations
@@ -49,8 +47,8 @@ logger = get_logger("tracer")
 # BOTH a complete chain AND a fully grounded error object -- being strong on
 # one cannot compensate for being empty on the other. A weighted sum would let
 # a payment with no error object at all still score ~0.5 on chain completeness
-# alone, which is precisely the "plausible-sounding story filling a gap"
-# failure mode GROUND_TRUTH.md Day 3-4 warns about.
+# alone, which is precisely the failure mode of filling a gap with a
+# plausible-sounding story.
 #
 #     confidence = chain_completeness
 #                * error_grounding
@@ -63,25 +61,24 @@ logger = get_logger("tracer")
 #                         that never reaches the origin both show up here.
 #   error_grounding     = fraction of the (source, step, reason) triplet that
 #                         is actually populated on the terminal failure event.
-#   inherited_...       = Module 2's resolution_confidence. The tracer cannot
-#                         be more certain about *why* than the resolver was
-#                         about *what*.
-#   ignored events      = events Module 2 could not place in the chain. Each
-#                         one is a piece of evidence nobody has explained.
+#   inherited_...       = the resolver's confidence. The tracer cannot be more
+#                         certain about why a payment failed than the resolver
+#                         was about what state it is in.
+#   ignored events      = events the resolver could not place in the chain.
+#                         Each is a piece of evidence nobody has explained.
 #
-# These weights are a RecoverX design choice, NOT a documented Razorpay or RBI
-# figure. Do not present them to judges as either.
+# These weights are local design choices with no external basis. They are not
+# documented Razorpay or RBI figures and must not be described as such.
 # --------------------------------------------------------------------------
-# ARBITRARY / HEURISTIC. This value is NOT derived from anything -- not from
-# a Razorpay figure, not from an RBI figure, and not reverse-engineered to make
-# the threshold below cross at a particular ignored-event count. It was chosen
-# only as "a deduction big enough to matter, small enough not to dominate".
-# Do not imply in the pitch deck that it is grounded in a source; it is not.
+# Heuristic. Not derived from any external figure, and not reverse-engineered
+# to make the threshold below cross at a particular ignored-event count: it was
+# chosen only as a deduction large enough to matter but small enough not to
+# dominate.
 #
-# For the record, here is what it actually produces. Note that
-# `inherited_resolution_confidence` is never 1.0 when events were ignored,
-# because Module 2 has already deducted its own PENALTY_ILLEGAL_TRANSITION
-# (0.25) per ignored event -- the two penalties compound:
+# What it actually produces, noting that `inherited_resolution_confidence` is
+# never 1.0 when events were ignored because resolution has already deducted
+# its own PENALTY_ILLEGAL_TRANSITION (0.25) per ignored event, so the two
+# penalties compound:
 #
 #   n ignored | inherited | 1 * 1 * inherited - 0.15n | confidence | < 0.60?
 #   ----------+-----------+---------------------------+------------+--------
@@ -89,21 +86,21 @@ logger = get_logger("tracer")
 #       2     |   0.50    |  0.50 - 0.30 =  0.20      |    0.20    |  yes
 #       3     |   0.25    |  0.25 - 0.45 = -0.20      |    0.00    |  yes
 #
-# So the confidence gate first fires at n=2. At n=1 the score lands EXACTLY on
-# the threshold, and `0.60 < 0.60` is False -- that case is caught solely by
-# the structural `events_ignored_during_resolution` rule below, which is why
-# that rule exists independently of the score. That exact-boundary landing is
-# coincidence, not design, and it is knife-edge: changing either this constant
-# or PENALTY_ILLEGAL_TRANSITION by 0.01 flips whether a second ambiguity
-# reason is recorded for n=1. The ambiguity VERDICT is unaffected either way.
+# So the confidence gate first fires at n=2. At n=1 the score lands exactly on
+# the threshold, and `0.60 < 0.60` is False, so that case is caught solely by
+# the structural `events_ignored_during_resolution` rule below -- which is why
+# that rule exists independently of the score. The exact-boundary landing is
+# coincidence rather than design, and it is knife-edge: changing this constant
+# or PENALTY_ILLEGAL_TRANSITION by 0.01 flips whether a second ambiguity reason
+# is recorded at n=1. The ambiguity verdict itself is unaffected either way.
 PENALTY_PER_IGNORED_EVENT = 0.15
 
 # Below this, the diagnosis is treated as ambiguous regardless of which
-# individual check passed. Backstop, not the primary gate -- the structural
-# rules below are. Also arbitrary; see the note above.
+# individual check passed. A backstop rather than the primary gate; the
+# structural rules below are. Also heuristic -- see the note above.
 CONFIDENCE_AMBIGUITY_THRESHOLD = 0.60
 
-# The two states the tracer is defined for (GROUND_TRUTH.md Day 3-4).
+# The only two states the tracer is defined for.
 TRACEABLE_STATES = frozenset({CanonicalState.FAILED, CanonicalState.PENDING_WEBHOOK})
 
 # Resolution rules that are inherently ambiguous no matter how the chain looks.
@@ -118,9 +115,8 @@ AMBIGUOUS_RESOLUTION_RULES = frozenset(
 class NotTraceableError(ValueError):
     """Raised when asked to diagnose a payment that did not fail.
 
-    Deliberately loud. Returning a placeholder root cause for a CAPTURED
-    payment would put a fabricated diagnosis into the audit trail, which is
-    exactly what this module exists to prevent.
+    Deliberately loud. Returning a placeholder root cause for a captured
+    payment would put a fabricated diagnosis into the audit trail.
     """
 
 
@@ -344,10 +340,10 @@ class FailurePropagationTracer:
     ) -> Tuple[List[int], float]:
         """Detect telemetry gaps straight from the sequence numbers.
 
-        Module 1 assigns per-entity sequence numbers starting at 1, so the
-        events we *should* have seen are 1..max(sequence). Anything absent from
-        that range is missing telemetry -- whether it is a hole in the middle
-        or a chain that never reaches the origin.
+        The gateway assigns per-entity sequence numbers starting at 1, so the
+        events that should be present are 1..max(sequence). Anything absent
+        from that range is missing telemetry, whether a hole in the middle or a
+        chain that never reaches the origin.
         """
         if not ordered:
             return [], 0.0
@@ -375,9 +371,9 @@ class FailurePropagationTracer:
     def _error_grounding(error: Optional[ErrorObject]) -> float:
         """Fraction of the (source, step, reason) triplet actually populated.
 
-        GROUND_TRUTH.md Day 0 calls this triplet a free causal-chain marker
-        Razorpay already provides. If it is not all there, the diagnosis is not
-        fully grounded and the score must say so.
+        Razorpay already provides this triplet as a causal-chain marker. If it
+        is not fully populated the diagnosis is not fully grounded, and the
+        score has to say so.
         """
         if error is None:
             return 0.0
@@ -454,7 +450,7 @@ class FailurePropagationTracer:
                 "before any recovery action"
             )
 
-        # --- the Module 2 continuity rules -------------------------------
+        # --- continuity with the resolver's own findings ------------------
         if resolution.ignored_event_ids:
             reasons.append(
                 "events_ignored_during_resolution: "
@@ -488,7 +484,7 @@ class FailurePropagationTracer:
     ) -> str:
         """Quote the real error fields; never paraphrase, never invent.
 
-        The grounded form is fixed by the Module 3 prompt:
+        The grounded form is fixed by the
             "Failure at step: <step>, source: <source>, reason: <reason>"
         so the literal values stay greppable back to the originating event.
         """

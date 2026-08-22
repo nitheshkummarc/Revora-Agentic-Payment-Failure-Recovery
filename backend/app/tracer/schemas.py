@@ -1,14 +1,13 @@
-"""Schemas for the FailurePropagationTracer (Module 3).
+"""Schemas for failure propagation tracing.
 
-The tracer's input is the FULL StateResolution from Module 2, not just the
-final CanonicalState. Two payments can resolve to the same state by very
-different routes -- a clean single `payment.failed`, versus a chain where
-events had to be ignored as unreachable -- and the tracer's root cause,
-ambiguity flag and confidence all have to reflect that difference. Carrying
-only the state would throw that distinction away at exactly the layer whose
-job is to explain it.
+The tracer's input is the complete StateResolution, not just the final
+CanonicalState. Two payments can reach the same state by very different routes
+-- a clean single `payment.failed`, versus a chain where events had to be
+ignored as unreachable -- and the root cause, ambiguity flag and confidence all
+have to reflect that difference. Carrying only the state would discard the
+distinction at exactly the layer whose job is to explain it.
 
-Every model sets extra="forbid", same rationale as Modules 1 and 2.
+Every model sets extra="forbid".
 """
 
 from __future__ import annotations
@@ -30,14 +29,14 @@ class StrictModel(BaseModel):
 class TraceInput(StrictModel):
     """Everything the tracer is allowed to see about one payment.
 
-    Like Module 2's PaymentObservation, this schema has no field that can
-    carry the gateway's internal ground-truth state -- the tracer diagnoses
-    from evidence plus the resolver's reading of it, nothing else.
+    Like PaymentObservation, this schema has no field that can carry the
+    gateway's internal state: the tracer diagnoses from evidence plus the
+    resolver's reading of it, nothing else.
     """
 
     payment_id: str
-    # The complete Module 2 output, including ignored_event_ids and
-    # resolution_reason. Not narrowed to `.state`.
+    # The complete resolution, including ignored_event_ids and
+    # resolution_reason. Deliberately not narrowed to `.state`.
     resolution: StateResolution
     # The linked event chain: webhook attempts, retries, gateway responses.
     events: List[WebhookEvent] = Field(default_factory=list)
@@ -61,14 +60,13 @@ class CausalHop(StrictModel):
 class TraceResult(StrictModel):
     """The tracer's output.
 
-    The four fields GROUND_TRUTH.md Day 3-4 specifies verbatim are
-    `root_cause`, `causal_chain`, `confidence` and `ambiguous`. Everything
-    below those is audit-trail detail so a judge can reconstruct exactly how
-    the verdict was reached.
+    `root_cause`, `causal_chain`, `confidence` and `ambiguous` are the contract;
+    everything below them is audit detail allowing the verdict to be
+    reconstructed.
 
-    `ambiguous` is the single gate for "force a status-endpoint query before
-    any recovery action". There is deliberately no second, separate
-    needs-status-check flag on this model -- one gate, one meaning.
+    `ambiguous` is the single gate forcing a status query before any recovery
+    action. There is deliberately no second needs-status-check flag: one gate,
+    one meaning, so the two cannot drift apart.
     """
 
     payment_id: str
@@ -87,7 +85,7 @@ class TraceResult(StrictModel):
     error_grounding: float = Field(ge=0.0, le=1.0)
     inherited_resolution_confidence: float = Field(ge=0.0, le=1.0)
 
-    # --- carried through from Module 2, so the audit trail is continuous ---
+    # --- carried through from resolution, so the audit trail is continuous ---
     resolved_state: CanonicalState
     resolution_reason: str
     ignored_event_ids: List[str] = Field(default_factory=list)
