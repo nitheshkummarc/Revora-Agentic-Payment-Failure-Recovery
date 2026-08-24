@@ -116,16 +116,23 @@ byte-identical per-event outcomes.
 
 | Outcome | Count | Value |
 |---|---|---|
-| Recovered | 325 | ₹20,40,275 |
+| Settled via retry against the mock gateway | 324 | ₹20,40,126 |
 | Blocked by policy | 63 | ₹10,02,892 |
-| Escalated | 81 | ₹2,83,719 |
-| Needs review | 0 | ₹0 |
-| No action needed | 31 | ₹68,219 |
+| Escalated | 79 | ₹2,82,571 |
+| Needs review | 4 | ₹1,796 |
+| No action needed | 30 | ₹67,720 |
 | **Total** | **500** | **₹33,95,105** |
 
 All 10 policy rules fired. 31 rows carried a prompt-injection attempt; all 31
-escalated and none executed. No stage passed a degraded result forward — hence
-zero `needs_review`.
+escalated and none executed.
+
+The four `needs_review` rows are the `verify_mismatch_stale_success` scenario,
+and they are there on purpose. Each one's failure webhook was delivered while
+the authorization and capture that followed were dropped, so the merchant-visible
+evidence reads FAILED at full confidence while the gateway has already captured
+the payment. The retry planned on that evidence cannot land, and Verify holds the
+row for a human instead of recording a recovery it could not confirm. A run with
+no such rows demonstrates less, not more.
 
 **On the headline number.** The dashboard reports a *Correctly Routed Rate*
 (61.3% of addressable value), deliberately not a recovery rate. A retry always
@@ -137,6 +144,101 @@ arithmetic over a synthetic distribution rather than a measurement.
 
 What the run does demonstrate: correct routing, every guardrail firing, and
 fail-closed behaviour on missing compliance fields.
+
+## Naive-baseline comparison
+
+Revora was evaluated against a naive always-retry baseline across 500 identical
+synthetic incidents. Both policies replay the same generated rows, from the same
+seed and the same reference instant, each against its own freshly reset gateway,
+so the only variable is the policy. The naive policy has no tracer, no policy
+engine and no verification stage: it retries everything.
+
+Every payment is classified by its state *before* either policy acted, read from
+gateway truth. A retry that "succeeds" against a payment the gateway had already
+captured is not a recovery — it is duplicate-payment risk, and it is counted as
+one.
+
+| Category | Revora | Naive always-retry |
+|---|---|---|
+| Legitimately recovered | ₹19,56,950 (300) | ₹22,39,521 (379) |
+| Already successful, preserved | ₹1,52,692 (58) | ₹1,52,692 (58) |
+| Incorrectly put at risk | **₹0 (0)** | ₹10,02,892 (63) |
+| Safely blocked | ₹10,02,892 (63) | ₹0 (0) |
+| Escalated | ₹2,82,571 (79) | ₹0 (0) |
+
+| Counter | Revora | Naive |
+|---|---|---|
+| Unsafe retries attempted | 0 | 63 |
+| Duplicate-payment risk | 4 | 58 |
+| — of which the gateway actually moved money | **0** | **54 (₹1,50,896)** |
+| Correct escalations | 79 | 0 |
+| Verification failures caught | 4 | 0 |
+
+The duplicate-payment row is worth splitting, because the totals flatter the
+naive policy. Of the 58 already-successful payments it retried, the gateway
+captured 54 of them — money moved on a payment that had already succeeded — and
+refused the other 4 only because they were already `CAPTURED`. On those 4 the
+naive policy was saved by gateway enforcement, not by anything it did. Revora
+attempted 4 retries against already-successful payments and moved money on none
+of them: the refused capture left every one still `CAPTURED`, and Verify held
+all 4 for review.
+
+For the same reason, read `already_successful_preserved_paise` carefully. It is
+assigned by prior state, so both policies show an identical ₹1,52,692 — but the
+naive policy did not preserve that value, it captured most of it. The category
+records what was true before either policy acted; the duplicate-payment counter
+above is what records what they then did about it.
+
+Read honestly, in both directions. The naive policy books 79 more recoveries than
+Revora, because **a retry always succeeds against the mock gateway** — the rows
+Revora escalates for a status check, the naive policy simply retries into
+success. Nothing here models the probability that a real retry would land, so
+that gap is a property of the simulator, not evidence that retrying everything
+works. What the comparison does show is the cost side, which the simulator models
+faithfully: the naive policy attempted 63 retries the RBI policy engine refuses,
+put ₹10,02,892 at risk that Revora preserved, and retried 58 payments that had
+already succeeded without noticing any of them. Revora attempted 4 such retries
+and its Verify stage caught all 4; the naive policy has no verification stage, so
+its "verification failures caught" is 0 by construction rather than by performing
+better. The naive policy never blocks, so it has no safely-blocked equivalent —
+that row is reported as zero rather than mirrored across.
+
+These are synthetic incidents under a deterministic simulator. No figure here is
+a measurement of production revenue.
+
+```bash
+python data/run_baseline.py
+```
+
+### Benchmark scope
+
+Three things are deliberately outside this benchmark. International payment
+failures are not modelled: the dataset is INR-only and every compliance rule it
+exercises is RBI's, so a cross-border failure has no represented error vocabulary
+or rule set. Subscription-halt-specific flows are not exercised at the dataset
+level: `SubscriptionState.HALTED` and `subscription.halted` are implemented and
+unit-tested in the gateway, but the dataset creates no subscriptions, so retry
+exhaustion is governed here by the policy engine's `MAX_RETRIES_EXCEEDED` rather
+than by a subscription halting. Out-of-order webhook delivery is likewise absent
+from the dataset: the resolver's ordering and the gateway's out-of-order chaos
+mode are both unit-tested, but no generated row emits an out-of-order sequence,
+so the ordering guarantee is proven by unit tests rather than by this batch. In
+each case the mechanism is tested; what is missing is dataset-level coverage, and
+the distinction is worth keeping precise.
+
+The same distinction applies to one rule inside the tracer. A *partial* gap in
+the event chain — some events delivered, one missing from the middle — sets
+`ambiguous: true` through the structural gap rule, and that is unit-tested. No
+generated row produces one: every ambiguous row in the batch is total silence
+rather than a hole in a chain, so the gap rule is proven by unit tests and not by
+this dataset.
+
+One caveat on the four `needs_review` rows. They depend on their failure webhook
+being delivered while the two that follow are dropped. At the 5% default delivery
+failure rate that is reliable and the count is reproducible, but it is a property
+of the seed rather than a structural guarantee: raise the failure rate and a
+stale-success row degrades into ordinary silence, resolving to `PENDING_WEBHOOK`
+and escalating instead.
 
 ## Running
 

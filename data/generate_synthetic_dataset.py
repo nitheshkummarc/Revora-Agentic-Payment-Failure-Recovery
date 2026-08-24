@@ -542,8 +542,15 @@ def build_standard_failures(count: int, rng: random.Random, start: int) -> List[
 # --------------------------------------------------------------------------
 # Bucket: ambiguous states
 # --------------------------------------------------------------------------
+#: Rows at the end of the ambiguous bucket reserved for the stale-success case.
+#: Small on purpose: the row exists to prove the Verify stage refuses to record
+#: a recovery it cannot confirm, and a handful of rows demonstrates that as well
+#: as a hundred would while leaving the bucket's other sub-cases at full size.
+STALE_SUCCESS_ROWS = 4
+
+
 def build_ambiguous(count: int, rng: random.Random, start: int) -> List[Dict[str, Any]]:
-    """Four sub-cases, covering both documented ambiguous behaviours.
+    """Five sub-cases, covering both documented ambiguous behaviours.
 
     `silent_drop`      -- the webhook never fires. Only silence is observable,
                           and past the threshold that silence is a signal.
@@ -555,16 +562,35 @@ def build_ambiguous(count: int, rng: random.Random, start: int) -> List[Dict[str
     `flip`             -- the documented Failed-to-Authorized flip: a later
                           authorization supersedes the earlier failure.
 
+    `verify_mismatch_stale_success`
+                       -- the failure webhook was delivered, but the later
+                          authorization and capture were both dropped. Delivered
+                          evidence therefore reads FAILED with full confidence
+                          while the gateway has already captured the payment.
+                          A retry planned on that evidence cannot land, and the
+                          row exists to prove the Verify stage refuses to record
+                          a recovery it could not confirm.
+
     The two delay sub-cases are seeded in the `at_observation` phase. Seeding
     them earlier would let the delay elapse before the batch reads them, which
     resolves the ambiguity the row exists to present.
+
+    The stale-success rows are taken from the end of the bucket rather than
+    added to it, so the bucket keeps its size and the rows before them keep
+    their values: every sub-case draws the same fields in the same order, so
+    the random stream is identical either way.
     """
     sub_cases = ("silent_drop", "delay_failed", "delay_authorized", "flip")
+    cycled = max(count - STALE_SUCCESS_ROWS, 0)
     rows: List[Dict[str, Any]] = []
 
     for index in range(count):
         n = start + index
-        sub_case = sub_cases[index % len(sub_cases)]
+        sub_case = (
+            sub_cases[index % len(sub_cases)]
+            if index < cycled
+            else "verify_mismatch_stale_success"
+        )
         payment_id = f"pay_amb_{n:04d}"
         profile = "incorrect_otp" if index % 2 == 0 else "insufficient_funds"
         amount = rng.choice(COMMON_AMOUNTS_PAISE)
@@ -609,7 +635,7 @@ def build_ambiguous(count: int, rng: random.Random, start: int) -> List[Dict[str
                 "silence that is actually a slow success; the status query reconciles "
                 "the payment rather than acting on it"
             )
-        else:  # flip
+        elif sub_case == "flip":
             setup = [
                 _create_step(payment_id, amount, note),
                 _fail_step(
@@ -621,6 +647,22 @@ def build_ambiguous(count: int, rng: random.Random, start: int) -> List[Dict[str
             intent = (
                 "the documented Failed-to-Authorized flip; the later authorization "
                 "supersedes the failure and no recovery action is required"
+            )
+        else:  # verify_mismatch_stale_success
+            # The failure is delivered; the two events that follow it are not.
+            # That is the whole mechanism: the merchant's evidence stops at the
+            # failure while the gateway goes on to capture, so a plan built from
+            # the evidence is confidently out of date.
+            setup = [
+                _create_step(payment_id, amount, note),
+                _fail_step(payment_id, profile),
+                _webhook_step(payment_id, "payment.authorized", _chaos(["silent_drop"])),
+                _webhook_step(payment_id, "payment.captured", _chaos(["silent_drop"])),
+            ]
+            intent = (
+                "delivered evidence reads FAILED at full confidence while the payment "
+                "has already been captured; the retry cannot land and the row must be "
+                "held for review rather than recorded as a recovery"
             )
 
         rows.append(

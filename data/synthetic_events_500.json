@@ -19235,8 +19235,8 @@
     {
       "row_id": "row_0397",
       "bucket": "ambiguous",
-      "scenario": "silent_drop",
-      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
+      "scenario": "verify_mismatch_stale_success",
+      "intent": "delivered evidence reads FAILED at full confidence while the payment has already been captured; the retry cannot land and the row must be held for review rather than recorded as a recovery",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0397",
@@ -19272,6 +19272,25 @@
               "reason": "incorrect_otp",
               "metadata": {}
             },
+            "chaos": null
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0397",
+            "event": "payment.authorized",
+            "chaos": {
+              "modes": [
+                "silent_drop"
+              ],
+              "delay_seconds": 0.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0397",
+            "event": "payment.captured",
             "chaos": {
               "modes": [
                 "silent_drop"
@@ -19288,8 +19307,8 @@
     {
       "row_id": "row_0398",
       "bucket": "ambiguous",
-      "scenario": "delay_failed",
-      "intent": "the failure webhook is still in flight when the payment is observed; the status query confirms the failure and the row escalates",
+      "scenario": "verify_mismatch_stale_success",
+      "intent": "delivered evidence reads FAILED at full confidence while the payment has already been captured; the retry cannot land and the row must be held for review rather than recorded as a recovery",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0398",
@@ -19312,9 +19331,7 @@
             "amount": 14900,
             "currency": "INR",
             "notes": "Auto-debit for annual plan"
-          }
-        ],
-        "at_observation": [
+          },
           {
             "op": "fail_payment",
             "payment_id": "pay_amb_0398",
@@ -19327,23 +19344,43 @@
               "reason": "insufficient_funds",
               "metadata": {}
             },
+            "chaos": null
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0398",
+            "event": "payment.authorized",
             "chaos": {
               "modes": [
-                "delayed_webhook"
+                "silent_drop"
               ],
-              "delay_seconds": 45.0,
+              "delay_seconds": 0.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0398",
+            "event": "payment.captured",
+            "chaos": {
+              "modes": [
+                "silent_drop"
+              ],
+              "delay_seconds": 0.0,
               "flip_after_seconds": 30.0,
               "duplicate_after_seconds": 1.0
             }
           }
-        ]
+        ],
+        "at_observation": []
       }
     },
     {
       "row_id": "row_0399",
       "bucket": "ambiguous",
-      "scenario": "delay_authorized",
-      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
+      "scenario": "verify_mismatch_stale_success",
+      "intent": "delivered evidence reads FAILED at full confidence while the payment has already been captured; the retry cannot land and the row must be held for review rather than recorded as a recovery",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0399",
@@ -19366,30 +19403,56 @@
             "amount": 14900,
             "currency": "INR",
             "notes": null
-          }
-        ],
-        "at_observation": [
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0399",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "Payment failed due to incorrect OTP",
+              "field": "otp",
+              "source": "customer",
+              "step": "payment_authentication",
+              "reason": "incorrect_otp",
+              "metadata": {}
+            },
+            "chaos": null
+          },
           {
             "op": "simulate_webhook",
             "payment_id": "pay_amb_0399",
             "event": "payment.authorized",
             "chaos": {
               "modes": [
-                "delayed_webhook"
+                "silent_drop"
               ],
-              "delay_seconds": 45.0,
+              "delay_seconds": 0.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0399",
+            "event": "payment.captured",
+            "chaos": {
+              "modes": [
+                "silent_drop"
+              ],
+              "delay_seconds": 0.0,
               "flip_after_seconds": 30.0,
               "duplicate_after_seconds": 1.0
             }
           }
-        ]
+        ],
+        "at_observation": []
       }
     },
     {
       "row_id": "row_0400",
       "bucket": "ambiguous",
-      "scenario": "flip",
-      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
+      "scenario": "verify_mismatch_stale_success",
+      "intent": "delivered evidence reads FAILED at full confidence while the payment has already been captured; the retry cannot land and the row must be held for review rather than recorded as a recovery",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0400",
@@ -19425,9 +19488,28 @@
               "reason": "insufficient_funds",
               "metadata": {}
             },
+            "chaos": null
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0400",
+            "event": "payment.authorized",
             "chaos": {
               "modes": [
-                "failed_authorized_flip"
+                "silent_drop"
+              ],
+              "delay_seconds": 0.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0400",
+            "event": "payment.captured",
+            "chaos": {
+              "modes": [
+                "silent_drop"
               ],
               "delay_seconds": 0.0,
               "flip_after_seconds": 30.0,

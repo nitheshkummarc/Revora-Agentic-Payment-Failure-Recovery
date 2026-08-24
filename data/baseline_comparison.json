@@ -1,0 +1,62 @@
+{
+  "note": "Controlled synthetic benchmark comparing two policies under identical deterministic conditions. Not a measurement of production revenue.",
+  "dataset_count": 500,
+  "policies": {
+    "Revora": {
+      "amounts_paise": {
+        "legitimately_recovered_paise": 195695000,
+        "already_successful_preserved_paise": 15269200,
+        "incorrectly_put_at_risk_paise": 0,
+        "safely_blocked_paise": 100289200,
+        "escalated_paise": 28257100
+      },
+      "counts": {
+        "legitimately_recovered_paise": 300,
+        "already_successful_preserved_paise": 58,
+        "incorrectly_put_at_risk_paise": 0,
+        "safely_blocked_paise": 63,
+        "escalated_paise": 79
+      },
+      "reconciliation": {
+        "amount_sum_matches": true,
+        "category_sum_paise": 339510500,
+        "dataset_sum_paise": 339510500,
+        "classified_count": 500,
+        "expected_count": 500,
+        "count_matches": true,
+        "duplicate_assignments": [],
+        "no_duplicates": true,
+        "unclassified": [],
+        "passed": true
+      }
+    },
+    "naive always-retry": {
+      "amounts_paise": {
+        "legitimately_recovered_paise": 223952100,
+        "already_successful_preserved_paise": 15269200,
+        "incorrectly_put_at_risk_paise": 100289200,
+        "safely_blocked_paise": 0,
+        "escalated_paise": 0
+      },
+      "counts": {
+        "legitimately_recovered_paise": 379,
+        "already_successful_preserved_paise": 58,
+        "incorrectly_put_at_risk_paise": 63,
+        "safely_blocked_paise": 0,
+        "escalated_paise": 0
+      },
+      "reconciliation": {
+        "amount_sum_matches": true,
+        "category_sum_paise": 339510500,
+        "dataset_sum_paise": 339510500,
+        "classified_count": 500,
+        "expected_count": 500,
+        "count_matches": true,
+        "duplicate_assignments": [],
+        "no_duplicates": true,
+        "unclassified": [],
+        "passed": true
+      }
+    }
+  }
+}
