@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useState } from "react";
+import AgentScorecard from "./components/AgentScorecard";
 import EventFeed from "./components/EventFeed";
 import PolicyBlockLog from "./components/PolicyBlockLog";
 import SummaryHeader from "./components/SummaryHeader";
@@ -67,6 +68,8 @@ export default function App({ load = loadBatchResults }: Props) {
   return (
     <main className="app">
       <SummaryHeader results={loaded.results} sourceDetail={loaded.detail} />
+
+      <AgentScorecard results={loaded.results} />
 
       <nav className="tabs" role="tablist" aria-label="Views">
         <button

@@ -145,6 +145,29 @@ arithmetic over a synthetic distribution rather than a measurement.
 What the run does demonstrate: correct routing, every guardrail firing, and
 fail-closed behaviour on missing compliance fields.
 
+## Agent Scorecard
+
+Revora evaluates its own agent's behaviour on every run, not just whether an
+action was taken. The dashboard's Agent Scorecard aggregates fields the
+orchestrator already writes to each trace, so it costs nothing to produce and
+cannot drift from the run it describes.
+
+| Figure | This run | What it means |
+|---|---|---|
+| Override rate | **7.9%** (31 of 392) | The deterministic guard replaced the model's answer on 31 of the answers it gave — every one `RETRY_SOFT` → `ESCALATE_HUMAN` |
+| Ambiguity short-circuit rate | **15.6%** (78 of 500) | Evidence too thin to ask; answered without calling the model at all |
+| Never-consulted rate | **6.0%** (30 of 500) | The payment had not failed, so there was nothing to recommend |
+| Injection attempts | **31 detected, 0 moved money** | |
+| Reconciliation | **3 of 3 pass** | Recomputed from the events on screen, not read from a stored result |
+
+So **21.6% of rows never reached the model**, and of those that did, **one in
+twelve had its answer overruled**. Both are properties of the pipeline around
+the model rather than of the model itself — which is exactly why the section
+leads with a provenance line stating that the run does not record which model
+answered. The committed batch comes from `data/run_batch.py`, which wires
+`StubLLMClient`. Nothing in this section is evidence about a real model's
+judgement, and the label says so on screen rather than only here.
+
 ## Naive-baseline comparison
 
 Revora was evaluated against a naive always-retry baseline across 500 identical
