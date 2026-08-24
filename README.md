@@ -77,18 +77,66 @@ Two boundaries are enforced structurally rather than by convention:
 
 ## Status
 
-| Component | State | Tests |
-|---|---|---|
-| Mock payment gateway + fault injection | Built | 26 |
-| State resolver | Built | 28 |
-| Failure propagation tracer | Built | 22 |
-| Recommendation layer | Built | 43 |
-| Policy engine | Built | 64 |
-| Orchestrator + verify | Built | 17 |
-| Synthetic dataset generator | Built | 53 |
-| X-Ray dashboard | Built | 64 |
+All eight components are built.
 
-253 backend tests, 64 frontend tests.
+| Component | Tests |
+|---|---|
+| Mock payment gateway + fault injection | 26 |
+| State resolver | 28 |
+| Failure propagation tracer | 22 |
+| Recommendation layer | 43 |
+| Policy engine | 64 |
+| Orchestrator + verify | 17 |
+| API / CORS scoping | 9 |
+| Synthetic dataset generator | 53 |
+| X-Ray dashboard | 64 |
+
+**262 backend + 64 frontend = 326 tests passing**, plus 16 that are skipped by
+default — see below.
+
+### What is not covered
+
+A further 16 tests exercise prompt injection against the **real** model rather
+than the offline stub. They skip unless `ANTHROPIC_API_KEY` is set, and they
+skip loudly: a green suite without a key is not evidence they passed.
+
+```bash
+ANTHROPIC_API_KEY=... python -m pytest backend/tests/test_intelligence_live_api.py -v
+```
+
+Until that runs, every claim about injection resistance rests on the
+deterministic guard — which is tested against a stub rigged to comply with each
+injection, so it is a real guarantee. It is not the same claim as "the model
+resists injection", and the two are worth keeping apart.
+
+## Results
+
+A 500-event synthetic batch, replayed end to end. Two independent runs produce
+byte-identical per-event outcomes.
+
+| Outcome | Count | Value |
+|---|---|---|
+| Recovered | 325 | ₹20,40,275 |
+| Blocked by policy | 63 | ₹10,02,892 |
+| Escalated | 81 | ₹2,83,719 |
+| Needs review | 0 | ₹0 |
+| No action needed | 31 | ₹68,219 |
+| **Total** | **500** | **₹33,95,105** |
+
+All 10 policy rules fired. 31 rows carried a prompt-injection attempt; all 31
+escalated and none executed. No stage passed a degraded result forward — hence
+zero `needs_review`.
+
+**On the headline number.** The dashboard reports a *Correctly Routed Rate*
+(61.3% of addressable value), deliberately not a recovery rate. A retry always
+succeeds against the mock gateway, so the figure measures whether each payment
+reached its correct decision — not how often a real retry would land. Adding
+five high-value rows to the dataset once moved it 16 percentage points without
+changing a single decision, which is the clearest demonstration that it is
+arithmetic over a synthetic distribution rather than a measurement.
+
+What the run does demonstrate: correct routing, every guardrail firing, and
+fail-closed behaviour on missing compliance fields.
 
 ## Running
 
@@ -96,7 +144,7 @@ Two boundaries are enforced structurally rather than by convention:
 
 ```bash
 pip install -r backend/requirements.txt
-python -m pytest -q                                # 253 tests
+python -m pytest -q                                # 262 passed, 16 skipped
 uvicorn app.main:app --reload --app-dir backend    # http://localhost:8000
 ```
 
@@ -107,8 +155,8 @@ is unaffected.
 ### Generating a batch run
 
 The dashboard renders a completed batch run, so one has to exist first. On a
-fresh clone `data/batch_results.json` is committed, but regenerating it is a
-single command:
+fresh clone `data/batch_results.json` is committed, so this is only needed to
+regenerate it:
 
 ```bash
 python data/generate_synthetic_dataset.py    # 500 events -> data/synthetic_events_500.json
@@ -152,9 +200,39 @@ npm test              # 64 offline tests, no servers needed
 npm run test:live     # end-to-end; needs backend on :8000 and a served dashboard
 ```
 
+## Layout
+
+```
+backend/app/gateway/         mock gateway + fault injection
+backend/app/state_machine/   resolves a payment's true state from delivered evidence
+backend/app/tracer/          root cause, causal chain, confidence, ambiguity
+backend/app/intelligence/    prompt construction, sanitiser, model client
+backend/app/policy/          the rules, and the engine that applies them in order
+backend/app/orchestrator/    the loop, the batch runner, the results endpoint
+data/generate_synthetic_dataset.py   standalone; imports nothing from backend/
+data/run_batch.py                    replays the dataset through the orchestrator
+frontend/src/                react dashboard, read-only
+```
+
+## Configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | unset | Enables live model calls. Without it the recommendation layer uses a deterministic stub and every other layer is unaffected. |
+| `REVORA_CORS_ORIGINS` | the four localhost dev/preview origins | Comma-separated origins allowed to read the API. Scoped rather than `*`, since nothing here needs to be readable by any page on the internet. |
+
 ## Scope
 
 No real Razorpay API calls, no API keys in the repo, no card data, no database,
 no authentication. Everything runs in a single process with in-memory state.
 Time-dependent behaviour uses an injectable clock, so a documented 45-second
 webhook delay is exercised instantly in tests and at real speed in a demo.
+
+The synthetic dataset's bucket split (60/20/10/10) is a test-coverage design
+choice — it allocates rows so every code path is exercised at a useful sample
+size. It is not a measurement of how payments fail in production, and nothing
+here supports presenting it as one. Error `code`, `field`, `source`, `step` and
+`reason` values are drawn only from Razorpay's documented vocabulary; where a
+scenario needed a value the reference does not supply, the gap is recorded in
+the dataset's `value_provenance` rather than filled with a plausible-sounding
+substitute.
