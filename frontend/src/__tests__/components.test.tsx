@@ -13,7 +13,15 @@ import EventFeed from "../components/EventFeed";
 import PolicyBlockLog from "../components/PolicyBlockLog";
 import SummaryHeader from "../components/SummaryHeader";
 import TraceView, { traceJson } from "../components/TraceView";
-import { blocked, blockedSip, escalated, noAction, recovered, sampleResults } from "./fixtures";
+import {
+  blocked,
+  blockedSip,
+  escalated,
+  makeEvent,
+  noAction,
+  recovered,
+  sampleResults,
+} from "./fixtures";
 
 describe("EventFeed", () => {
   it("lists every event with its outcome badge", () => {
@@ -121,6 +129,34 @@ describe("TraceView", () => {
     expect(screen.getByTestId("stage-policy")).toHaveTextContent("APPROVED");
     expect(screen.getByTestId("stage-action")).toHaveTextContent("RETRY_SOFT");
     expect(screen.getByTestId("verification")).toHaveTextContent("CAPTURED");
+  });
+
+  it("shows the model's own recommendation alongside the guard's override", () => {
+    const overridden = makeEvent({
+      payment_id: "pay_injected",
+      outcome: "escalated",
+      recommended_action: "ESCALATE_HUMAN",
+      original_llm_action: "RETRY_SOFT",
+      guard_override_reason:
+        "injection_guard: customer note matched instruction-like pattern(s) " +
+        "['ignore_previous_instructions']; recommendation overridden from " +
+        "RETRY_SOFT to ESCALATE_HUMAN",
+      injection_patterns_flagged: ["ignore_previous_instructions"],
+    });
+    render(<TraceView event={overridden} />);
+
+    const override = screen.getByTestId("guard-override");
+    // Both halves, not just the safe outcome: a reader has to be able to see
+    // that the model asked for a debit and was refused.
+    expect(override).toHaveTextContent("RETRY_SOFT");
+    expect(override).toHaveTextContent("ESCALATE_HUMAN");
+    expect(override).toHaveTextContent("injection_guard");
+    expect(screen.getByTestId("stage-policy")).toHaveTextContent("Model recommended");
+  });
+
+  it("shows no override block when the guard did not intervene", () => {
+    render(<TraceView event={recovered} />);
+    expect(screen.queryByTestId("guard-override")).not.toBeInTheDocument();
   });
 
   it("renders a policy block as its own distinct stage state, with the reason", () => {

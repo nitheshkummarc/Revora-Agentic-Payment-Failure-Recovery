@@ -630,6 +630,83 @@ def test_gateway_records_undelivered_event_when_circuit_open(clock: FakeClock):
     assert any(t.reason.startswith("delivery_circuit_open") for t in status.transition_log)
 
 
+
+
+def test_delivery_while_the_circuit_is_already_open_is_refused_not_attempted(
+    clock: FakeClock,
+):
+    """The entry guard, as distinct from the guard that trips mid-retry.
+
+    The existing breaker tests all stop at the moment it opens, which raises
+    from inside the retry loop. This covers the call *after* that: the breaker
+    is already open, and the question is whether a further delivery is quietly
+    attempted anyway.
+    """
+    from app.gateway.mock_gateway import CircuitOpenError
+
+    settings = GatewaySettings(
+        webhook_delivery_failure_rate=1.0,
+        delivery_max_attempts=2,
+        circuit_breaker_threshold=1,
+    )
+    client = WebhookDeliveryClient(settings, clock, ScriptedRandom([0.0, 0.0, 0.0]))
+
+    # First call trips the breaker; it raises from the retry guard.
+    with pytest.raises(CircuitOpenError):
+        client.deliver(_dummy_event())
+    assert client.circuit_open is True
+    attempts_after_trip = len(client.delivery_log)
+
+    # Second call: refused at entry. The message distinguishes this guard from
+    # the mid-retry one, which says "tripped during retry".
+    with pytest.raises(CircuitOpenError) as caught:
+        client.deliver(_dummy_event())
+    assert "circuit breaker is open after" in str(caught.value)
+
+    # The refusal is total: no further attempt is made, so the delivery log
+    # does not grow. This is what "delivery stops entirely" has to mean.
+    assert len(client.delivery_log) == attempts_after_trip
+
+
+def test_an_open_circuit_drops_later_webhooks_without_touching_gateway_truth(
+    clock: FakeClock,
+):
+    """The consequence of the guard above, one level up.
+
+    Truth and evidence part company here: the payment really did transition,
+    but no webhook carrying that fact ever reaches the merchant. That is the
+    whole reason a stalled breaker is dangerous rather than merely noisy.
+    """
+    settings = GatewaySettings(
+        webhook_delivery_failure_rate=1.0,
+        delivery_max_attempts=2,
+        circuit_breaker_threshold=1,
+    )
+    gateway = MockPaymentGateway(settings=settings, clock=clock)
+    _create(gateway)
+    gateway.fail_payment(FailPaymentRequest(payment_id="pay_test_1"))
+    assert gateway.delivery_client.circuit_open is True
+
+    # A second, later event, with the breaker already open.
+    gateway.simulate_webhook(
+        SimulateWebhookRequest(
+            entity_id="pay_test_1", event=WebhookEventName.PAYMENT_AUTHORIZED
+        )
+    )
+    status = gateway.get_payment_status("pay_test_1")
+
+    # Gateway truth advanced: the flip really happened.
+    assert status.payment.state is PaymentState.AUTHORIZED
+    # The merchant saw none of it -- not the failure, not the authorization.
+    assert status.event_history == []
+    assert status.payment.webhook_derived_state is PaymentState.CREATED
+    # Every drop is recorded with the reason, so the silence is explicable
+    # afterwards rather than indistinguishable from a payment that never moved.
+    dropped = [t for t in status.transition_log if t.reason.startswith("delivery_circuit_open")]
+    assert len(dropped) == 2
+    assert "circuit breaker is open after" in dropped[1].reason
+
+
 # --------------------------------------------------------------------------
 # API-level error handling
 # --------------------------------------------------------------------------

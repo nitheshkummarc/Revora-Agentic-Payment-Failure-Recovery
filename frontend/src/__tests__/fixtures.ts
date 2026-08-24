@@ -31,6 +31,8 @@ export function makeEvent(overrides: Partial<EventTrace> = {}): EventTrace {
     recommendation_confidence: 0.8,
     reasoning: "transient failure, a single soft retry is reasonable",
     injection_patterns_flagged: [],
+    original_llm_action: null,
+    guard_override_reason: null,
     approved: true,
     final_action: "RETRY_SOFT",
     blocked_reason: null,

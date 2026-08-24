@@ -32,3 +32,7 @@ frontend/dist/
 # never edited by hand. One source of truth for the run.
 frontend/public/batch_results.json
 frontend/tsconfig.tsbuildinfo
+
+# Coverage and benchmark byproducts
+.coverage
+data/baseline_revora_run.json

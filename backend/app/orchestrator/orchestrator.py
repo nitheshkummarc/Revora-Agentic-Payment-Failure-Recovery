@@ -188,6 +188,12 @@ class EventTrace(StrictModel):
     recommendation_confidence: Optional[float] = None
     reasoning: Optional[str] = None
     injection_patterns_flagged: List[str] = Field(default_factory=list)
+    # What the model actually returned, when the deterministic guard replaced
+    # it. `recommended_action` above is the guard's answer, so without these two
+    # the audit trail shows the safe action with no record that a different one
+    # was proposed. Both are None whenever the guard did not intervene.
+    original_llm_action: Optional[RecommendedAction] = None
+    guard_override_reason: Optional[str] = None
 
     # Validate
     approved: Optional[bool] = None
@@ -728,6 +734,8 @@ class AgentOrchestrator:
         trace.injection_patterns_flagged = list(
             decision.sanitization.injection_patterns_flagged
         )
+        trace.original_llm_action = decision.original_llm_action
+        trace.guard_override_reason = decision.guard_override_reason
 
     @staticmethod
     def _record_decision(trace: EventTrace, decision: PolicyDecision) -> None:

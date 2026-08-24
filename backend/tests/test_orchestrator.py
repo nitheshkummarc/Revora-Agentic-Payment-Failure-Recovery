@@ -235,6 +235,36 @@ def test_adversarial_note_never_produces_an_unsafe_action(orchestrator, gateway)
     assert gateway.payments["pay_adversarial"].state.value == "FAILED"
 
 
+def test_guard_override_records_what_the_model_actually_said(orchestrator, gateway):
+    """A guard override must leave both halves on the trace.
+
+    `recommended_action` carries the guard's answer, so on its own it shows a
+    safe escalation and no sign that the model proposed a debit. The audit trail
+    has to hold the divergence, not just the outcome of resolving it.
+    """
+    event = seed_adversarial(gateway)
+    trace = orchestrator.run_batch([event]).events[0]
+
+    assert trace.original_llm_action is RecommendedAction.RETRY_SOFT
+    assert trace.recommended_action is RecommendedAction.ESCALATE_HUMAN
+    assert trace.guard_override_reason is not None
+    assert "injection_guard" in trace.guard_override_reason
+    assert "ignore_previous_instructions" in trace.guard_override_reason
+
+
+def test_trace_carries_no_override_when_the_guard_did_not_intervene(
+    orchestrator, gateway
+):
+    """The two fields must stay absent on an ordinary row, so their presence is
+    itself the signal that the guard fired."""
+    event = seed_standard_failure(gateway)
+    trace = orchestrator.run_batch([event]).events[0]
+
+    assert trace.original_llm_action is None
+    assert trace.guard_override_reason is None
+    assert trace.recommended_action is RecommendedAction.RETRY_SOFT
+
+
 # --------------------------------------------------------------------------
 # Loop order and stage isolation
 # --------------------------------------------------------------------------
@@ -545,3 +575,258 @@ def test_cooldown_is_terminal_and_touches_no_gateway(gateway, clock, tmp_path):
     assert trace.outcome is EventOutcome.NO_ACTION
     assert results.summary.no_action == 1
     assert gateway.payments["pay_standard"].state.value == "FAILED"
+
+
+# --------------------------------------------------------------------------
+# Generic exception handling, one test per stage
+#
+# These target the unclassified-exception handler in each stage, not the
+# business-logic failures already covered above. Each injects a raise from the
+# stage's real dependency, so what is under test is the `except` itself: that an
+# unforeseen error is contained, is never allowed to look like a completed
+# stage, and leaves enough on the trace to say which stage failed and why.
+# --------------------------------------------------------------------------
+SENTINEL = "injected dependency failure"
+
+
+class Boom(ValueError):
+    """An error no stage classifies. Deliberately not one of the exception
+    types any handler names, so only the generic clause can catch it."""
+
+
+class RaisingGateway:
+    """Wraps a real gateway and raises on the Nth call to one method.
+
+    Counting the calls is what makes the injection precise: `get_payment_status`
+    is reached from Observe, Execute and Verify, so a wrapper that always raised
+    could only ever exercise the first of them.
+    """
+
+    def __init__(self, inner, method: str, on_call: int = 1) -> None:
+        self._inner = inner
+        self._method = method
+        self._on_call = on_call
+        self.calls = 0
+
+    def __getattr__(self, name):
+        inner_attr = getattr(self._inner, name)
+        if name != self._method:
+            return inner_attr
+
+        def guarded(*args, **kwargs):
+            self.calls += 1
+            if self.calls == self._on_call:
+                raise Boom(SENTINEL)
+            return inner_attr(*args, **kwargs)
+
+        return guarded
+
+
+class RaisingResolver:
+    def resolve(self, observation):
+        raise Boom(SENTINEL)
+
+
+class RaisingTracer:
+    def trace(self, trace_input):
+        raise Boom(SENTINEL)
+
+
+class RaisingIntelligence:
+    def recommend(self, request):
+        raise Boom(SENTINEL)
+
+
+class RaisingPolicy:
+    def validate(self, *args, **kwargs):
+        raise Boom(SENTINEL)
+
+
+def build(base_gateway, base_clock, tmp_path, **overrides):
+    """Default wiring, with any one dependency swapped for a raising double.
+
+    The positional names are prefixed so an override keyed `gateway=` or
+    `clock=` cannot collide with them.
+    """
+    kwargs = dict(
+        gateway=base_gateway,
+        intelligence=IntelligenceLayer(llm_client=retry_stub(), clock=base_clock),
+        clock=base_clock,
+        results_path=tmp_path / "batch_results.json",
+    )
+    kwargs.update(overrides)
+    return AgentOrchestrator(**kwargs)
+
+
+def assert_contained(trace, stage: PipelineStage):
+    """The safety property every one of these shares.
+
+    Not merely "it did not crash": the event must be marked for review, tagged
+    with the stage that failed, and carry the underlying cause -- and it must
+    never have been recorded as a recovery.
+    """
+    assert trace.outcome is EventOutcome.NEEDS_REVIEW
+    assert trace.failed_stage is stage
+    assert trace.needs_review_reason is not None
+    assert SENTINEL in trace.needs_review_reason
+    assert trace.outcome is not EventOutcome.RECOVERED
+
+
+def test_unclassified_error_in_observe_is_contained(gateway, clock, tmp_path):
+    """The outermost handler. `_observe` classifies only EntityNotFoundError,
+    so anything else reaches the per-event catch-all."""
+    event = seed_standard_failure(gateway)
+    orchestrator = build(
+        gateway, clock, tmp_path, gateway=RaisingGateway(gateway, "get_payment_status", 1)
+    )
+    trace = orchestrator.run_batch([event]).events[0]
+
+    assert_contained(trace, PipelineStage.OBSERVE)
+    assert "unhandled error" in trace.needs_review_reason
+    # Nothing downstream ran, so nothing downstream may be populated.
+    assert trace.resolved_state is None
+    assert trace.execution is None
+    assert trace.verification is None
+
+
+def test_unclassified_error_in_resolution_is_tagged_trace(gateway, clock, tmp_path):
+    event = seed_standard_failure(gateway)
+    orchestrator = build(gateway, clock, tmp_path, resolver=RaisingResolver())
+    trace = orchestrator.run_batch([event]).events[0]
+
+    assert_contained(trace, PipelineStage.TRACE)
+    assert "state resolution failed" in trace.needs_review_reason
+    assert trace.resolved_state is None
+    assert trace.execution is None
+
+
+def test_unclassified_error_in_tracer_is_tagged_trace(gateway, clock, tmp_path):
+    event = seed_standard_failure(gateway)
+    orchestrator = build(gateway, clock, tmp_path, tracer=RaisingTracer())
+    trace = orchestrator.run_batch([event]).events[0]
+
+    assert_contained(trace, PipelineStage.TRACE)
+    assert "tracing failed" in trace.needs_review_reason
+    # Resolution completed before the tracer raised, so it is kept; the stages
+    # after it must not be.
+    assert trace.resolved_state is CanonicalState.FAILED
+    assert trace.root_cause is None
+    assert trace.recommended_action is None
+    assert trace.execution is None
+
+
+def test_unclassified_error_in_planner_is_tagged_plan(gateway, clock, tmp_path):
+    event = seed_standard_failure(gateway)
+    orchestrator = build(gateway, clock, tmp_path, intelligence=RaisingIntelligence())
+    trace = orchestrator.run_batch([event]).events[0]
+
+    assert_contained(trace, PipelineStage.PLAN)
+    assert "planning failed" in trace.needs_review_reason
+    assert trace.root_cause is not None
+    assert trace.recommended_action is None
+    assert trace.approved is None
+    assert trace.execution is None
+
+
+def test_unclassified_error_in_policy_is_tagged_validate(gateway, clock, tmp_path):
+    event = seed_standard_failure(gateway)
+    orchestrator = build(gateway, clock, tmp_path, policy=RaisingPolicy())
+    trace = orchestrator.run_batch([event]).events[0]
+
+    assert_contained(trace, PipelineStage.VALIDATE)
+    assert "policy validation failed" in trace.needs_review_reason
+    assert trace.recommended_action is RecommendedAction.RETRY_SOFT
+    # The gate never returned, so nothing may be treated as approved.
+    assert trace.approved is None
+    assert trace.final_action is None
+    assert trace.execution is None
+
+
+def test_retry_soft_execution_failure_is_never_marked_successful(
+    gateway, clock, tmp_path
+):
+    """The highest-risk path: Execute returns a record rather than raising.
+
+    A record that defaulted to `succeeded=True` would make a failed gateway call
+    read as a completed retry, and the outcome mapping would call it a recovery.
+    """
+    event = seed_standard_failure(gateway)
+    orchestrator = build(
+        gateway, clock, tmp_path, gateway=RaisingGateway(gateway, "capture_payment", 1)
+    )
+    trace = orchestrator.run_batch([event]).events[0]
+
+    assert trace.execution is not None
+    assert trace.execution.succeeded is False
+    assert trace.execution.action is RecommendedAction.RETRY_SOFT
+    assert trace.execution.gateway_called is True
+    assert SENTINEL in trace.execution.detail
+    assert "retry did not complete" in trace.execution.detail
+    # Verify must refuse to confirm what never happened.
+    assert trace.verification.performed is False
+    assert trace.verification.matched is False
+    assert trace.outcome is EventOutcome.NEEDS_REVIEW
+    assert trace.outcome is not EventOutcome.RECOVERED
+    assert trace.failed_stage is PipelineStage.VERIFY
+
+
+def test_request_verification_status_failure_is_never_marked_successful(
+    gateway, clock, tmp_path
+):
+    """The same property on the other record-returning branch. An unresolved
+    ambiguity must not be recorded as reconciled."""
+    event = seed_ambiguous(gateway, clock)
+    # Observe reads status first; the status query inside Execute is call 2.
+    orchestrator = build(
+        gateway, clock, tmp_path, gateway=RaisingGateway(gateway, "get_payment_status", 2)
+    )
+    trace = orchestrator.run_batch([event]).events[0]
+
+    assert trace.recommended_action is RecommendedAction.REQUEST_VERIFICATION
+    assert trace.execution.succeeded is False
+    assert trace.execution.action is RecommendedAction.REQUEST_VERIFICATION
+    assert SENTINEL in trace.execution.detail
+    assert "status query failed" in trace.execution.detail
+    # `reconciled` stays None: the query never answered, so nothing was
+    # reconciled and nothing may later read as though it had been.
+    assert trace.execution.reconciled is None
+    assert trace.outcome is EventOutcome.NEEDS_REVIEW
+    assert trace.outcome is not EventOutcome.RECOVERED
+
+
+def test_unclassified_error_in_verify_is_tagged_verify(gateway, clock, tmp_path):
+    """The action landed but the confirming read failed. An unconfirmed action
+    is not a recovery, however well the execution itself went."""
+    event = seed_standard_failure(gateway)
+    # Observe (1), the retry's status read (2), then the verification read (3).
+    orchestrator = build(
+        gateway, clock, tmp_path, gateway=RaisingGateway(gateway, "get_payment_status", 3)
+    )
+    trace = orchestrator.run_batch([event]).events[0]
+
+    assert_contained(trace, PipelineStage.VERIFY)
+    assert "verification query failed" in trace.needs_review_reason
+    # Execution itself succeeded; only the confirmation failed. The record of
+    # what was done is kept, and the event still goes to a human.
+    assert trace.execution.succeeded is True
+    assert trace.verification is None
+
+
+def test_a_failing_event_does_not_stop_the_batch(gateway, clock, tmp_path):
+    """Containment is per event: one unclassified failure must not take the
+    rest of the batch with it."""
+    good = seed_standard_failure(gateway)
+    bad = seed_ambiguous(gateway, clock)
+    orchestrator = build(
+        gateway, clock, tmp_path, resolver=RaisingResolver()
+    )
+    results = orchestrator.run_batch([good, bad])
+
+    assert len(results.events) == 2
+    assert results.summary.total_events == 2
+    assert all(e.outcome is EventOutcome.NEEDS_REVIEW for e in results.events)
+    # Every failure reaches the human review list, not only a log line.
+    assert {item.payment_id for item in results.needs_human_review} == {
+        "pay_standard",
+        "pay_ambiguous",
+    }

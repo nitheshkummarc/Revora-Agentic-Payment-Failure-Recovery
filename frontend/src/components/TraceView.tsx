@@ -39,6 +39,9 @@ export default function TraceView({ event }: Props) {
   }
 
   const blocked = event.approved === false;
+  // Both fields are written together by the orchestrator, but the action alone
+  // is what the display needs, so the reason is not required to render.
+  const overridden = event.original_llm_action !== null;
 
   async function copy() {
     if (!event) return;
@@ -131,7 +134,18 @@ export default function TraceView({ event }: Props) {
             event.approved === null ? "skipped" : blocked ? "blocked" : "done"
           }
         >
-          <Field label="LLM recommended" value={event.recommended_action} />
+          {/* When the guard intervened, showing only the final action would
+              hide the fact that the model proposed something else. Both halves
+              are shown together, the model's answer first. */}
+          {overridden ? (
+            <Field
+              label="Model recommended"
+              value={event.original_llm_action}
+              tone="warn"
+            />
+          ) : (
+            <Field label="LLM recommended" value={event.recommended_action} />
+          )}
           <Field
             label="Model called"
             value={event.llm_called === null ? null : String(event.llm_called)}
@@ -142,6 +156,16 @@ export default function TraceView({ event }: Props) {
               value={event.injection_patterns_flagged.join(", ")}
               tone="warn"
             />
+          )}
+          {overridden && (
+            <div className="block" data-testid="guard-override">
+              <p className="block__rule">
+                Safety guard overrode the model:{" "}
+                <code>{event.original_llm_action}</code> →{" "}
+                <code>{event.recommended_action}</code>
+              </p>
+              <p className="block__reason">{event.guard_override_reason}</p>
+            </div>
           )}
           <Field
             label="Decision"

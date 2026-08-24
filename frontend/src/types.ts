@@ -60,6 +60,13 @@ export interface EventTrace {
   recommendation_confidence: number | null;
   reasoning: string | null;
   injection_patterns_flagged: string[];
+  /**
+   * What the model returned before the deterministic guard replaced it, and
+   * why. Both null unless the guard intervened, so their presence is itself the
+   * signal that it did.
+   */
+  original_llm_action: Action | null;
+  guard_override_reason: string | null;
 
   approved: boolean | null;
   final_action: Action | null;

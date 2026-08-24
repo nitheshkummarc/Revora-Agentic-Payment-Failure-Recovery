@@ -233,6 +233,18 @@ generated row produces one: every ambiguous row in the batch is total silence
 rather than a hole in a chain, so the gap rule is proven by unit tests and not by
 this dataset.
 
+**Known untested paths in the gateway.** Four failure paths are implemented and
+reachable but have no test, and are listed here as boundaries rather than left
+silent. The webhook delivery client's *exhausted retry budget* branch never runs
+under test, because at the default failure rate no delivery ever uses its whole
+budget. Neither *illegal-transition refusal* is covered — the one guarding
+gateway truth, nor the one guarding the merchant-visible derived state; the
+ordering guarantee they back up is tested, but through sequence handling rather
+than through these checks. Nor is the refusal to *fail a payment from a terminal
+state*. All four are safety logic rather than convenience code, which is why they
+are named individually. The circuit breaker's open-state guard was in this list
+and now has coverage.
+
 One caveat on the four `needs_review` rows. They depend on their failure webhook
 being delivered while the two that follow are dropped. At the 5% default delivery
 failure rate that is reliable and the count is reproducible, but it is a property
