@@ -12,12 +12,14 @@ boolean flag that the code sets itself.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
 from app.gateway.schemas import ErrorObject, ErrorSource
 from app.intelligence.llm_client import (
     DEFAULT_MODEL,
+    AnthropicLLMClient,
     ExplodingLLMClient,
     IntelligenceLayer,
     StubLLMClient,
@@ -513,3 +515,85 @@ def test_decision_is_serialisable_for_the_audit_trail():
     assert payload["original_llm_action"] == "RETRY_SOFT"
     assert payload["sanitization"]["looks_like_instruction"] is True
     assert isinstance(payload["untrusted_customer_note"], str)
+
+
+# --------------------------------------------------------------------------
+# Prompt caching
+# --------------------------------------------------------------------------
+class RecordingMessages:
+    """Captures the request the client builds, and returns a valid parse."""
+
+    def __init__(self) -> None:
+        self.kwargs = None
+
+    def parse(self, **kwargs):
+        self.kwargs = kwargs
+        return SimpleNamespace(
+            parsed_output=LLMRecommendation(
+                recommended_action=RecommendedAction.RETRY_SOFT,
+                confidence=0.8,
+                reasoning="recorded",
+            )
+        )
+
+
+class RecordingClient:
+    def __init__(self) -> None:
+        self.messages = RecordingMessages()
+
+
+def test_system_prompt_carries_a_cache_breakpoint():
+    """The system prompt is identical on every call, so it is the one part of
+    the request worth caching."""
+    recorder = RecordingClient()
+    client = AnthropicLLMClient(client=recorder)
+    client.recommend(SYSTEM_PROMPT, "trace summary for one payment")
+
+    system = recorder.messages.kwargs["system"]
+    # Sent as a block list rather than a bare string: cache_control attaches to
+    # a content block, and a plain string has nowhere to put it.
+    assert isinstance(system, list)
+    assert len(system) == 1
+    assert system[0]["type"] == "text"
+    assert system[0]["text"] == SYSTEM_PROMPT
+    assert system[0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_the_cached_block_holds_only_the_unchanging_prompt():
+    """Caching is a prefix match, so anything per-event inside the cached block
+    would write a new entry per call and never be read."""
+    recorder = RecordingClient()
+    client = AnthropicLLMClient(client=recorder)
+    note = "trace summary mentioning payment pay_12345"
+    client.recommend(SYSTEM_PROMPT, note)
+
+    kwargs = recorder.messages.kwargs
+    cached_text = kwargs["system"][0]["text"]
+    assert note not in cached_text
+    assert "pay_12345" not in cached_text
+    # The volatile half travels in the messages array, after the breakpoint.
+    assert kwargs["messages"] == [{"role": "user", "content": note}]
+
+
+def test_two_calls_send_a_byte_identical_cached_block():
+    """A single varying byte anywhere in the prefix would invalidate the entry
+    on every request, so the whole thing is checked rather than its length."""
+    first, second = RecordingClient(), RecordingClient()
+    AnthropicLLMClient(client=first).recommend(SYSTEM_PROMPT, "first event")
+    AnthropicLLMClient(client=second).recommend(SYSTEM_PROMPT, "second event")
+
+    assert first.messages.kwargs["system"] == second.messages.kwargs["system"]
+
+
+def test_the_request_contract_is_otherwise_unchanged():
+    """The breakpoint is additive: model, max_tokens and the structured-output
+    format are untouched."""
+    recorder = RecordingClient()
+    client = AnthropicLLMClient(client=recorder)
+    result = client.recommend(SYSTEM_PROMPT, "trace summary")
+
+    kwargs = recorder.messages.kwargs
+    assert kwargs["model"] == client.model
+    assert kwargs["max_tokens"] == client.max_tokens
+    assert kwargs["output_format"] is LLMRecommendation
+    assert isinstance(result, LLMRecommendation)

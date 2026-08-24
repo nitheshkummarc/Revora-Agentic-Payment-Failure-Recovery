@@ -86,10 +86,27 @@ class AnthropicLLMClient:
     def recommend(self, system_prompt: str, user_content: str) -> LLMRecommendation:
         # A brand-new single-message request. Nothing from any previous event is
         # carried in -- there is deliberately no self._history to append to.
+        #
+        # The system prompt is a frozen constant sent byte-identical on every
+        # call, and the per-event content sits after it, so a cache breakpoint
+        # at the end of the system block is read by every subsequent request in
+        # a batch. Placement matters more than the marker: caching is a prefix
+        # match, so the breakpoint has to fall at the end of the shared portion.
+        #
+        # Whether it engages depends on the prompt clearing the model's minimum
+        # cacheable prefix, which is not a property of this code and is not
+        # asserted here. Read `usage.cache_read_input_tokens` on a live call to
+        # find out -- a prefix below the minimum silently does not cache.
         response = self._client.messages.parse(
             model=self.model,
             max_tokens=self.max_tokens,
-            system=system_prompt,
+            system=[
+                {
+                    "type": "text",
+                    "text": system_prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
             messages=[{"role": "user", "content": user_content}],
             output_format=LLMRecommendation,
         )
