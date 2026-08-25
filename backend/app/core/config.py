@@ -8,7 +8,20 @@ gateway behaviour.
 
 from __future__ import annotations
 
+import os
+
 from pydantic import BaseModel, ConfigDict, Field
+
+#: Values that mean "off" for a boolean operational env var. Everything else
+#: non-empty means "on" -- including typos, which is the safer direction for
+#: a kill switch to fail towards, but "false"/"0"/"no" have to mean off or
+#: setting one of them produces the opposite of the intended effect.
+_FALSY_ENV_VALUES = frozenset({"", "0", "false", "no", "off"})
+
+
+def env_flag(name: str) -> bool:
+    """Read a boolean operational env var (e.g. REVORA_DISABLE_LLM)."""
+    return os.environ.get(name, "").strip().lower() not in _FALSY_ENV_VALUES
 
 
 class GatewaySettings(BaseModel):

@@ -26,7 +26,7 @@ import os
 from datetime import datetime, timezone
 from typing import Callable, List, Optional, Protocol
 
-from app.core.config import INTELLIGENCE_SETTINGS
+from app.core.config import INTELLIGENCE_SETTINGS, env_flag
 from app.core.logging import get_logger, log_event
 from app.intelligence.prompts import SYSTEM_PROMPT, build_user_content
 from app.intelligence.sanitizer import sanitize_customer_note
@@ -233,7 +233,7 @@ class IntelligenceLayer:
         #    rather than at construction so it can be flipped for a live demo
         #    without a restart.
         # ------------------------------------------------------------------
-        if os.environ.get("REVORA_DISABLE_LLM"):
+        if env_flag("REVORA_DISABLE_LLM"):
             return self._fail_safe(
                 request, note, report, now, reason="llm_disabled_by_kill_switch"
             )

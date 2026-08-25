@@ -363,6 +363,47 @@ def test_kill_switch_cannot_disable_the_opt_out_gate(engine, monkeypatch):
     assert decision.rule_id == "CUSTOMER_OPTED_OUT"
 
 
+def test_kill_switch_typo_does_not_silently_disable_anything(engine, monkeypatch):
+    """An unrecognised name (typo, wrong case, or a rule this switch can't
+    reach) must not be silently accepted -- accepting it would let an
+    operator believe a rule was turned off when nothing changed. The real
+    MAX_DISCOUNT_EXCEEDED rule must still fire normally."""
+    monkeypatch.setenv("REVORA_DISABLED_RULES", "MAX_DISCOUNT_EXCEEEDED")  # typo'd
+
+    decision = engine.validate(llm(), context(discount_amount=500_000))  # Rs.5,000
+
+    assert decision.approved is False
+    assert decision.rule_id == "MAX_DISCOUNT_EXCEEDED"
+
+
+def test_kill_switch_logs_unrecognised_names_separately(engine, monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setenv("REVORA_DISABLED_RULES", "MAX_DISCOUNT_EXCEEEDED,MAX_RETRIES_EXCEEDED")
+    with caplog.at_level(logging.INFO, logger="revora.policy"):
+        engine.validate(llm(), context())
+
+    messages = [r.message for r in caplog.records]
+    assert any("unrecognised_rule_in_kill_switch" in m and "MAX_DISCOUNT_EXCEEEDED" in m for m in messages)
+    assert any(
+        "rules_disabled_by_kill_switch" in m and "MAX_RETRIES_EXCEEDED" in m for m in messages
+    )
+
+
+def test_disablable_rule_ids_matches_the_checks_list(engine):
+    """DISABLABLE_RULE_IDS is a hand-kept copy of the rule_ids inside
+    validate()'s inline `checks` list -- this is what catches the two
+    drifting apart if a rule is ever added to or removed from `checks`."""
+    from app.policy.engine import DISABLABLE_RULE_IDS
+
+    decision = engine.validate(llm(), context())
+    checked_rule_ids = {e.rule_id for e in decision.rules_evaluated}
+    non_disablable = {"CUSTOMER_OPTED_OUT"} | {
+        r for r in checked_rule_ids if r.startswith("MISSING_RBI_FIELD_")
+    }
+    assert DISABLABLE_RULE_IDS == checked_rule_ids - non_disablable
+
+
 def test_discount_exactly_at_the_cap_is_allowed(engine):
     decision = engine.validate(llm(), context(discount_amount=R.MAX_DISCOUNT_PAISE))
     assert decision.approved is True

@@ -541,6 +541,32 @@ def test_kill_switch_escalates_even_with_a_working_client(monkeypatch):
     assert decision.short_circuit_reason == "llm_disabled_by_kill_switch"
 
 
+@pytest.mark.parametrize("falsy_value", ["false", "False", "0", "no", "off", ""])
+def test_kill_switch_off_values_do_not_disable_the_llm(falsy_value, monkeypatch):
+    """A boolean env var that only recognises "unset" as off is a footgun --
+    REVORA_DISABLE_LLM=false must mean off, not on, or a deploy config that
+    explicitly sets it to a falsy-looking value gets the opposite of what it
+    asked for."""
+    monkeypatch.setenv("REVORA_DISABLE_LLM", falsy_value)
+    layer = IntelligenceLayer(llm_client=StubLLMClient())
+
+    decision = layer.recommend(make_input())
+
+    assert decision.recommended_action is RecommendedAction.RETRY_SOFT
+    assert decision.llm_called is True
+
+
+@pytest.mark.parametrize("truthy_value", ["1", "true", "TRUE", "yes", "on", "anything"])
+def test_kill_switch_on_values_disable_the_llm(truthy_value, monkeypatch):
+    monkeypatch.setenv("REVORA_DISABLE_LLM", truthy_value)
+    layer = IntelligenceLayer(llm_client=StubLLMClient())
+
+    decision = layer.recommend(make_input())
+
+    assert decision.recommended_action is RecommendedAction.ESCALATE_HUMAN
+    assert decision.short_circuit_reason == "llm_disabled_by_kill_switch"
+
+
 def test_no_configured_client_escalates():
     layer = IntelligenceLayer(llm_client=None)
     decision = layer.recommend(make_input())

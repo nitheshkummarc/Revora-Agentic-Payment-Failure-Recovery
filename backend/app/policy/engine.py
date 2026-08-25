@@ -38,6 +38,23 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+#: The seven value-threshold RuleIds the kill switch is allowed to reach --
+#: kept in step with the `rule_id`s inside `checks` in `validate()` below by
+#: a test (test_disablable_rule_ids_matches_the_checks_list), since `checks`
+#: is built inline per-call and can't be introspected without one.
+DISABLABLE_RULE_IDS: FrozenSet[str] = frozenset(
+    {
+        R.RuleId.PRE_DEBIT_NOTICE_TOO_RECENT.value,
+        R.RuleId.MANDATE_CEILING_EXCEEDED.value,
+        R.RuleId.AFA_REQUIRED_AND_MISSING.value,
+        R.RuleId.AFA_SIP_INSURANCE_REQUIRED_AND_MISSING.value,
+        R.RuleId.MAX_DISCOUNT_EXCEEDED.value,
+        R.RuleId.MAX_RETRIES_EXCEEDED.value,
+        R.RuleId.TRACE_CONFIDENCE_BELOW_THRESHOLD.value,
+    }
+)
+
+
 def _disabled_rule_ids() -> FrozenSet[str]:
     """Operational kill switch: REVORA_DISABLED_RULES, a comma-separated list
     of RuleId names, for turning off one or more of the seven value-threshold
@@ -48,11 +65,26 @@ def _disabled_rule_ids() -> FrozenSet[str]:
     this switch cannot reach them -- an absent field or an opted-out customer
     stays a hard block regardless. Verify is a different module and has no
     kill switch of any kind.
+
+    A name that doesn't match any disablable RuleId (a typo, wrong case, or
+    one of the four rules this switch can't reach) is logged separately as
+    unrecognised rather than silently accepted -- accepting it would let an
+    operator believe a rule was turned off when nothing changed.
     """
     raw = os.environ.get("REVORA_DISABLED_RULES", "").strip()
     if not raw:
         return frozenset()
-    return frozenset(name.strip() for name in raw.split(",") if name.strip())
+    requested = frozenset(name.strip() for name in raw.split(",") if name.strip())
+    recognised = requested & DISABLABLE_RULE_IDS
+    unrecognised = requested - DISABLABLE_RULE_IDS
+    if unrecognised:
+        log_event(
+            logger,
+            "unrecognised_rule_in_kill_switch",
+            requested=sorted(unrecognised),
+            disablable=sorted(DISABLABLE_RULE_IDS),
+        )
+    return recognised
 
 
 class PolicyEngine:
