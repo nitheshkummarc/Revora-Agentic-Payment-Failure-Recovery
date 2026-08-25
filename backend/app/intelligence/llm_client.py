@@ -242,8 +242,19 @@ class IntelligenceLayer:
         except AssertionError:
             raise
         except Exception as exc:  # provider error, validation error, timeout
+            # The exception text (may carry request/response internals from the
+            # SDK or network layer) is logged server-side only. reasoning and
+            # short_circuit_reason reach the dashboard and the audit trail, so
+            # they get a fixed, generic code instead.
+            log_event(
+                logger,
+                "llm_call_failed",
+                payment_id=request.payment_id,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
             return self._fail_safe(
-                request, note, report, now, reason=f"llm_call_failed:{exc}"
+                request, note, report, now, reason="llm_call_failed"
             )
 
         # ------------------------------------------------------------------

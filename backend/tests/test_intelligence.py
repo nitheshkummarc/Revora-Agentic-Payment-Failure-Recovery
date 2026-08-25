@@ -498,6 +498,27 @@ def test_llm_failure_escalates_rather_than_guessing():
     assert "llm_call_failed" in decision.short_circuit_reason
 
 
+def test_llm_failure_does_not_leak_exception_detail_into_the_audit_trail():
+    """The exception text may carry SDK/network internals (auth headers,
+    hostnames, stack fragments). reasoning and short_circuit_reason reach the
+    dashboard, so neither may contain it -- the detail belongs in the
+    server-side log only."""
+    secret_detail = "connection reset by peer at proxy-internal-7f3a.example:443"
+
+    class BrokenClient:
+        model = "broken"
+
+        def recommend(self, system_prompt, user_content):
+            raise RuntimeError(secret_detail)
+
+    layer = IntelligenceLayer(llm_client=BrokenClient())
+    decision = layer.recommend(make_input())
+
+    assert secret_detail not in decision.reasoning
+    assert secret_detail not in decision.short_circuit_reason
+    assert decision.short_circuit_reason == "llm_call_failed"
+
+
 def test_no_configured_client_escalates():
     layer = IntelligenceLayer(llm_client=None)
     decision = layer.recommend(make_input())
