@@ -14497,8 +14497,8 @@
     {
       "row_id": "row_0305",
       "bucket": "ambiguous",
-      "scenario": "silent_drop",
-      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
+      "scenario": "chain_gap",
+      "intent": "sequence 2 of 3 (payment.dispute.created) is silently dropped between two events that deliver cleanly; the tracer must report the hole via missing_sequences rather than treat the visible chain as complete",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0305",
@@ -14523,8 +14523,127 @@
             "notes": "Customer called about this charge"
           },
           {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0305",
+            "event": "payment.authorized",
+            "chaos": null
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0305",
+            "event": "payment.dispute.created",
+            "chaos": {
+              "modes": [
+                "silent_drop"
+              ],
+              "delay_seconds": 0.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          },
+          {
             "op": "fail_payment",
             "payment_id": "pay_amb_0305",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "Payment failed due to incorrect OTP",
+              "field": "otp",
+              "source": "customer",
+              "step": "payment_authentication",
+              "reason": "incorrect_otp",
+              "metadata": {}
+            },
+            "chaos": null
+          }
+        ],
+        "at_observation": []
+      }
+    },
+    {
+      "row_id": "row_0306",
+      "bucket": "ambiguous",
+      "scenario": "out_of_order",
+      "intent": "the Failed-to-Authorized flip again, but the later authorization is scheduled to arrive before the earlier failure; the resolver must order by sequence/occurred_at, not by delivery order, and still land on the same AUTHORIZED resolution the in-order flip case does",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0306",
+        "amount": 99900,
+        "currency": "INR",
+        "customer_note": "Please retry after 6pm, my bank blocks daytime debits",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 199800,
+        "afa_flag": false,
+        "mandate_category": "general",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0306",
+            "amount": 99900,
+            "currency": "INR",
+            "notes": "Please retry after 6pm, my bank blocks daytime debits"
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0306",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "The customer does not have sufficient funds in the account to complete the payment.",
+              "field": null,
+              "source": "bank",
+              "step": "payment_authentication",
+              "reason": "insufficient_funds",
+              "metadata": {}
+            },
+            "chaos": {
+              "modes": [
+                "failed_authorized_flip",
+                "out_of_order_webhook"
+              ],
+              "delay_seconds": 0.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ],
+        "at_observation": []
+      }
+    },
+    {
+      "row_id": "row_0307",
+      "bucket": "ambiguous",
+      "scenario": "silent_drop",
+      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0307",
+        "amount": 499900,
+        "currency": "INR",
+        "customer_note": null,
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 999800,
+        "afa_flag": false,
+        "mandate_category": "insurance",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0307",
+            "amount": 499900,
+            "currency": "INR",
+            "notes": null
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0307",
             "error": {
               "code": "BAD_REQUEST_ERROR",
               "description": "Payment failed due to incorrect OTP",
@@ -14548,110 +14667,10 @@
       }
     },
     {
-      "row_id": "row_0306",
+      "row_id": "row_0308",
       "bucket": "ambiguous",
       "scenario": "delay_failed",
       "intent": "the failure webhook is still in flight when the payment is observed; the status query confirms the failure and the row escalates",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0306",
-        "amount": 99900,
-        "currency": "INR",
-        "customer_note": "Please retry after 6pm, my bank blocks daytime debits",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 199800,
-        "afa_flag": false,
-        "mandate_category": "general",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0306",
-            "amount": 99900,
-            "currency": "INR",
-            "notes": "Please retry after 6pm, my bank blocks daytime debits"
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0306",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "The customer does not have sufficient funds in the account to complete the payment.",
-              "field": null,
-              "source": "bank",
-              "step": "payment_authentication",
-              "reason": "insufficient_funds",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
-      "row_id": "row_0307",
-      "bucket": "ambiguous",
-      "scenario": "delay_authorized",
-      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0307",
-        "amount": 499900,
-        "currency": "INR",
-        "customer_note": null,
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 999800,
-        "afa_flag": false,
-        "mandate_category": "insurance",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0307",
-            "amount": 499900,
-            "currency": "INR",
-            "notes": null
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "simulate_webhook",
-            "payment_id": "pay_amb_0307",
-            "event": "payment.authorized",
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
-      "row_id": "row_0308",
-      "bucket": "ambiguous",
-      "scenario": "flip",
-      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0308",
@@ -14674,10 +14693,110 @@
             "amount": 499900,
             "currency": "INR",
             "notes": "Monthly subscription renewal"
-          },
+          }
+        ],
+        "at_observation": [
           {
             "op": "fail_payment",
             "payment_id": "pay_amb_0308",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "The customer does not have sufficient funds in the account to complete the payment.",
+              "field": null,
+              "source": "bank",
+              "step": "payment_authentication",
+              "reason": "insufficient_funds",
+              "metadata": {}
+            },
+            "chaos": {
+              "modes": [
+                "delayed_webhook"
+              ],
+              "delay_seconds": 45.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "row_id": "row_0309",
+      "bucket": "ambiguous",
+      "scenario": "delay_authorized",
+      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0309",
+        "amount": 249900,
+        "currency": "INR",
+        "customer_note": "Customer called about this charge",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 499800,
+        "afa_flag": false,
+        "mandate_category": "sip",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0309",
+            "amount": 249900,
+            "currency": "INR",
+            "notes": "Customer called about this charge"
+          }
+        ],
+        "at_observation": [
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0309",
+            "event": "payment.authorized",
+            "chaos": {
+              "modes": [
+                "delayed_webhook"
+              ],
+              "delay_seconds": 45.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "row_id": "row_0310",
+      "bucket": "ambiguous",
+      "scenario": "flip",
+      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0310",
+        "amount": 99900,
+        "currency": "INR",
+        "customer_note": "Monthly subscription renewal",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 199800,
+        "afa_flag": false,
+        "mandate_category": "utility",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0310",
+            "amount": 99900,
+            "currency": "INR",
+            "notes": "Monthly subscription renewal"
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0310",
             "error": {
               "code": "BAD_REQUEST_ERROR",
               "description": "The customer does not have sufficient funds in the account to complete the payment.",
@@ -14701,117 +14820,10 @@
       }
     },
     {
-      "row_id": "row_0309",
-      "bucket": "ambiguous",
-      "scenario": "silent_drop",
-      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0309",
-        "amount": 249900,
-        "currency": "INR",
-        "customer_note": "Customer called about this charge",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 499800,
-        "afa_flag": false,
-        "mandate_category": "sip",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0309",
-            "amount": 249900,
-            "currency": "INR",
-            "notes": "Customer called about this charge"
-          },
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0309",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "Payment failed due to incorrect OTP",
-              "field": "otp",
-              "source": "customer",
-              "step": "payment_authentication",
-              "reason": "incorrect_otp",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "silent_drop"
-              ],
-              "delay_seconds": 0.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ],
-        "at_observation": []
-      }
-    },
-    {
-      "row_id": "row_0310",
-      "bucket": "ambiguous",
-      "scenario": "delay_failed",
-      "intent": "the failure webhook is still in flight when the payment is observed; the status query confirms the failure and the row escalates",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0310",
-        "amount": 99900,
-        "currency": "INR",
-        "customer_note": "Monthly subscription renewal",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 199800,
-        "afa_flag": false,
-        "mandate_category": "utility",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0310",
-            "amount": 99900,
-            "currency": "INR",
-            "notes": "Monthly subscription renewal"
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0310",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "The customer does not have sufficient funds in the account to complete the payment.",
-              "field": null,
-              "source": "bank",
-              "step": "payment_authentication",
-              "reason": "insufficient_funds",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
       "row_id": "row_0311",
       "bucket": "ambiguous",
-      "scenario": "delay_authorized",
-      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
+      "scenario": "chain_gap",
+      "intent": "sequence 2 of 3 (payment.dispute.created) is silently dropped between two events that deliver cleanly; the tracer must report the hole via missing_sequences rather than treat the visible chain as complete",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0311",
@@ -14834,30 +14846,49 @@
             "amount": 99900,
             "currency": "INR",
             "notes": "Card was replaced last week"
-          }
-        ],
-        "at_observation": [
+          },
           {
             "op": "simulate_webhook",
             "payment_id": "pay_amb_0311",
             "event": "payment.authorized",
+            "chaos": null
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0311",
+            "event": "payment.dispute.created",
             "chaos": {
               "modes": [
-                "delayed_webhook"
+                "silent_drop"
               ],
-              "delay_seconds": 45.0,
+              "delay_seconds": 0.0,
               "flip_after_seconds": 30.0,
               "duplicate_after_seconds": 1.0
             }
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0311",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "Payment failed due to incorrect OTP",
+              "field": "otp",
+              "source": "customer",
+              "step": "payment_authentication",
+              "reason": "incorrect_otp",
+              "metadata": {}
+            },
+            "chaos": null
           }
-        ]
+        ],
+        "at_observation": []
       }
     },
     {
       "row_id": "row_0312",
       "bucket": "ambiguous",
-      "scenario": "flip",
-      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
+      "scenario": "out_of_order",
+      "intent": "the Failed-to-Authorized flip again, but the later authorization is scheduled to arrive before the earlier failure; the resolver must order by sequence/occurred_at, not by delivery order, and still land on the same AUTHORIZED resolution the in-order flip case does",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0312",
@@ -14895,7 +14926,8 @@
             },
             "chaos": {
               "modes": [
-                "failed_authorized_flip"
+                "failed_authorized_flip",
+                "out_of_order_webhook"
               ],
               "delay_seconds": 0.0,
               "flip_after_seconds": 30.0,
@@ -15115,8 +15147,8 @@
     {
       "row_id": "row_0317",
       "bucket": "ambiguous",
-      "scenario": "silent_drop",
-      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
+      "scenario": "chain_gap",
+      "intent": "sequence 2 of 3 (payment.dispute.created) is silently dropped between two events that deliver cleanly; the tracer must report the hole via missing_sequences rather than treat the visible chain as complete",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0317",
@@ -15141,8 +15173,127 @@
             "notes": "Please retry after 6pm, my bank blocks daytime debits"
           },
           {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0317",
+            "event": "payment.authorized",
+            "chaos": null
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0317",
+            "event": "payment.dispute.created",
+            "chaos": {
+              "modes": [
+                "silent_drop"
+              ],
+              "delay_seconds": 0.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          },
+          {
             "op": "fail_payment",
             "payment_id": "pay_amb_0317",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "Payment failed due to incorrect OTP",
+              "field": "otp",
+              "source": "customer",
+              "step": "payment_authentication",
+              "reason": "incorrect_otp",
+              "metadata": {}
+            },
+            "chaos": null
+          }
+        ],
+        "at_observation": []
+      }
+    },
+    {
+      "row_id": "row_0318",
+      "bucket": "ambiguous",
+      "scenario": "out_of_order",
+      "intent": "the Failed-to-Authorized flip again, but the later authorization is scheduled to arrive before the earlier failure; the resolver must order by sequence/occurred_at, not by delivery order, and still land on the same AUTHORIZED resolution the in-order flip case does",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0318",
+        "amount": 249900,
+        "currency": "INR",
+        "customer_note": "Customer called about this charge",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 499800,
+        "afa_flag": false,
+        "mandate_category": "sip",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0318",
+            "amount": 249900,
+            "currency": "INR",
+            "notes": "Customer called about this charge"
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0318",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "The customer does not have sufficient funds in the account to complete the payment.",
+              "field": null,
+              "source": "bank",
+              "step": "payment_authentication",
+              "reason": "insufficient_funds",
+              "metadata": {}
+            },
+            "chaos": {
+              "modes": [
+                "failed_authorized_flip",
+                "out_of_order_webhook"
+              ],
+              "delay_seconds": 0.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ],
+        "at_observation": []
+      }
+    },
+    {
+      "row_id": "row_0319",
+      "bucket": "ambiguous",
+      "scenario": "silent_drop",
+      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0319",
+        "amount": 249900,
+        "currency": "INR",
+        "customer_note": null,
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 499800,
+        "afa_flag": false,
+        "mandate_category": "utility",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0319",
+            "amount": 249900,
+            "currency": "INR",
+            "notes": null
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0319",
             "error": {
               "code": "BAD_REQUEST_ERROR",
               "description": "Payment failed due to incorrect OTP",
@@ -15166,110 +15317,10 @@
       }
     },
     {
-      "row_id": "row_0318",
+      "row_id": "row_0320",
       "bucket": "ambiguous",
       "scenario": "delay_failed",
       "intent": "the failure webhook is still in flight when the payment is observed; the status query confirms the failure and the row escalates",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0318",
-        "amount": 249900,
-        "currency": "INR",
-        "customer_note": "Customer called about this charge",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 499800,
-        "afa_flag": false,
-        "mandate_category": "sip",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0318",
-            "amount": 249900,
-            "currency": "INR",
-            "notes": "Customer called about this charge"
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0318",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "The customer does not have sufficient funds in the account to complete the payment.",
-              "field": null,
-              "source": "bank",
-              "step": "payment_authentication",
-              "reason": "insufficient_funds",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
-      "row_id": "row_0319",
-      "bucket": "ambiguous",
-      "scenario": "delay_authorized",
-      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0319",
-        "amount": 249900,
-        "currency": "INR",
-        "customer_note": null,
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 499800,
-        "afa_flag": false,
-        "mandate_category": "utility",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0319",
-            "amount": 249900,
-            "currency": "INR",
-            "notes": null
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "simulate_webhook",
-            "payment_id": "pay_amb_0319",
-            "event": "payment.authorized",
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
-      "row_id": "row_0320",
-      "bucket": "ambiguous",
-      "scenario": "flip",
-      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0320",
@@ -15292,10 +15343,110 @@
             "amount": 499900,
             "currency": "INR",
             "notes": "Card was replaced last week"
-          },
+          }
+        ],
+        "at_observation": [
           {
             "op": "fail_payment",
             "payment_id": "pay_amb_0320",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "The customer does not have sufficient funds in the account to complete the payment.",
+              "field": null,
+              "source": "bank",
+              "step": "payment_authentication",
+              "reason": "insufficient_funds",
+              "metadata": {}
+            },
+            "chaos": {
+              "modes": [
+                "delayed_webhook"
+              ],
+              "delay_seconds": 45.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "row_id": "row_0321",
+      "bucket": "ambiguous",
+      "scenario": "delay_authorized",
+      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0321",
+        "amount": 14900,
+        "currency": "INR",
+        "customer_note": "Auto-debit for annual plan",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 29800,
+        "afa_flag": false,
+        "mandate_category": "utility",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0321",
+            "amount": 14900,
+            "currency": "INR",
+            "notes": "Auto-debit for annual plan"
+          }
+        ],
+        "at_observation": [
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0321",
+            "event": "payment.authorized",
+            "chaos": {
+              "modes": [
+                "delayed_webhook"
+              ],
+              "delay_seconds": 45.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "row_id": "row_0322",
+      "bucket": "ambiguous",
+      "scenario": "flip",
+      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0322",
+        "amount": 99900,
+        "currency": "INR",
+        "customer_note": "Please retry after 6pm, my bank blocks daytime debits",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 199800,
+        "afa_flag": false,
+        "mandate_category": "insurance",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0322",
+            "amount": 99900,
+            "currency": "INR",
+            "notes": "Please retry after 6pm, my bank blocks daytime debits"
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0322",
             "error": {
               "code": "BAD_REQUEST_ERROR",
               "description": "The customer does not have sufficient funds in the account to complete the payment.",
@@ -15319,117 +15470,10 @@
       }
     },
     {
-      "row_id": "row_0321",
-      "bucket": "ambiguous",
-      "scenario": "silent_drop",
-      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0321",
-        "amount": 14900,
-        "currency": "INR",
-        "customer_note": "Auto-debit for annual plan",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 29800,
-        "afa_flag": false,
-        "mandate_category": "utility",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0321",
-            "amount": 14900,
-            "currency": "INR",
-            "notes": "Auto-debit for annual plan"
-          },
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0321",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "Payment failed due to incorrect OTP",
-              "field": "otp",
-              "source": "customer",
-              "step": "payment_authentication",
-              "reason": "incorrect_otp",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "silent_drop"
-              ],
-              "delay_seconds": 0.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ],
-        "at_observation": []
-      }
-    },
-    {
-      "row_id": "row_0322",
-      "bucket": "ambiguous",
-      "scenario": "delay_failed",
-      "intent": "the failure webhook is still in flight when the payment is observed; the status query confirms the failure and the row escalates",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0322",
-        "amount": 99900,
-        "currency": "INR",
-        "customer_note": "Please retry after 6pm, my bank blocks daytime debits",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 199800,
-        "afa_flag": false,
-        "mandate_category": "insurance",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0322",
-            "amount": 99900,
-            "currency": "INR",
-            "notes": "Please retry after 6pm, my bank blocks daytime debits"
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0322",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "The customer does not have sufficient funds in the account to complete the payment.",
-              "field": null,
-              "source": "bank",
-              "step": "payment_authentication",
-              "reason": "insufficient_funds",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
       "row_id": "row_0323",
       "bucket": "ambiguous",
-      "scenario": "delay_authorized",
-      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
+      "scenario": "chain_gap",
+      "intent": "sequence 2 of 3 (payment.dispute.created) is silently dropped between two events that deliver cleanly; the tracer must report the hole via missing_sequences rather than treat the visible chain as complete",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0323",
@@ -15452,30 +15496,49 @@
             "amount": 29900,
             "currency": "INR",
             "notes": "Auto-debit for annual plan"
-          }
-        ],
-        "at_observation": [
+          },
           {
             "op": "simulate_webhook",
             "payment_id": "pay_amb_0323",
             "event": "payment.authorized",
+            "chaos": null
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0323",
+            "event": "payment.dispute.created",
             "chaos": {
               "modes": [
-                "delayed_webhook"
+                "silent_drop"
               ],
-              "delay_seconds": 45.0,
+              "delay_seconds": 0.0,
               "flip_after_seconds": 30.0,
               "duplicate_after_seconds": 1.0
             }
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0323",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "Payment failed due to incorrect OTP",
+              "field": "otp",
+              "source": "customer",
+              "step": "payment_authentication",
+              "reason": "incorrect_otp",
+              "metadata": {}
+            },
+            "chaos": null
           }
-        ]
+        ],
+        "at_observation": []
       }
     },
     {
       "row_id": "row_0324",
       "bucket": "ambiguous",
-      "scenario": "flip",
-      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
+      "scenario": "out_of_order",
+      "intent": "the Failed-to-Authorized flip again, but the later authorization is scheduled to arrive before the earlier failure; the resolver must order by sequence/occurred_at, not by delivery order, and still land on the same AUTHORIZED resolution the in-order flip case does",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0324",
@@ -15513,7 +15576,8 @@
             },
             "chaos": {
               "modes": [
-                "failed_authorized_flip"
+                "failed_authorized_flip",
+                "out_of_order_webhook"
               ],
               "delay_seconds": 0.0,
               "flip_after_seconds": 30.0,
@@ -15733,8 +15797,8 @@
     {
       "row_id": "row_0329",
       "bucket": "ambiguous",
-      "scenario": "silent_drop",
-      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
+      "scenario": "chain_gap",
+      "intent": "sequence 2 of 3 (payment.dispute.created) is silently dropped between two events that deliver cleanly; the tracer must report the hole via missing_sequences rather than treat the visible chain as complete",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0329",
@@ -15759,8 +15823,127 @@
             "notes": "Auto-debit for annual plan"
           },
           {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0329",
+            "event": "payment.authorized",
+            "chaos": null
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0329",
+            "event": "payment.dispute.created",
+            "chaos": {
+              "modes": [
+                "silent_drop"
+              ],
+              "delay_seconds": 0.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          },
+          {
             "op": "fail_payment",
             "payment_id": "pay_amb_0329",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "Payment failed due to incorrect OTP",
+              "field": "otp",
+              "source": "customer",
+              "step": "payment_authentication",
+              "reason": "incorrect_otp",
+              "metadata": {}
+            },
+            "chaos": null
+          }
+        ],
+        "at_observation": []
+      }
+    },
+    {
+      "row_id": "row_0330",
+      "bucket": "ambiguous",
+      "scenario": "out_of_order",
+      "intent": "the Failed-to-Authorized flip again, but the later authorization is scheduled to arrive before the earlier failure; the resolver must order by sequence/occurred_at, not by delivery order, and still land on the same AUTHORIZED resolution the in-order flip case does",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0330",
+        "amount": 499900,
+        "currency": "INR",
+        "customer_note": "Auto-debit for annual plan",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 999800,
+        "afa_flag": false,
+        "mandate_category": "general",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0330",
+            "amount": 499900,
+            "currency": "INR",
+            "notes": "Auto-debit for annual plan"
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0330",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "The customer does not have sufficient funds in the account to complete the payment.",
+              "field": null,
+              "source": "bank",
+              "step": "payment_authentication",
+              "reason": "insufficient_funds",
+              "metadata": {}
+            },
+            "chaos": {
+              "modes": [
+                "failed_authorized_flip",
+                "out_of_order_webhook"
+              ],
+              "delay_seconds": 0.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ],
+        "at_observation": []
+      }
+    },
+    {
+      "row_id": "row_0331",
+      "bucket": "ambiguous",
+      "scenario": "silent_drop",
+      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0331",
+        "amount": 99900,
+        "currency": "INR",
+        "customer_note": null,
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 199800,
+        "afa_flag": false,
+        "mandate_category": "sip",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0331",
+            "amount": 99900,
+            "currency": "INR",
+            "notes": null
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0331",
             "error": {
               "code": "BAD_REQUEST_ERROR",
               "description": "Payment failed due to incorrect OTP",
@@ -15784,110 +15967,10 @@
       }
     },
     {
-      "row_id": "row_0330",
+      "row_id": "row_0332",
       "bucket": "ambiguous",
       "scenario": "delay_failed",
       "intent": "the failure webhook is still in flight when the payment is observed; the status query confirms the failure and the row escalates",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0330",
-        "amount": 499900,
-        "currency": "INR",
-        "customer_note": "Auto-debit for annual plan",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 999800,
-        "afa_flag": false,
-        "mandate_category": "general",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0330",
-            "amount": 499900,
-            "currency": "INR",
-            "notes": "Auto-debit for annual plan"
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0330",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "The customer does not have sufficient funds in the account to complete the payment.",
-              "field": null,
-              "source": "bank",
-              "step": "payment_authentication",
-              "reason": "insufficient_funds",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
-      "row_id": "row_0331",
-      "bucket": "ambiguous",
-      "scenario": "delay_authorized",
-      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0331",
-        "amount": 99900,
-        "currency": "INR",
-        "customer_note": null,
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 199800,
-        "afa_flag": false,
-        "mandate_category": "sip",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0331",
-            "amount": 99900,
-            "currency": "INR",
-            "notes": null
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "simulate_webhook",
-            "payment_id": "pay_amb_0331",
-            "event": "payment.authorized",
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
-      "row_id": "row_0332",
-      "bucket": "ambiguous",
-      "scenario": "flip",
-      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0332",
@@ -15910,10 +15993,110 @@
             "amount": 499900,
             "currency": "INR",
             "notes": null
-          },
+          }
+        ],
+        "at_observation": [
           {
             "op": "fail_payment",
             "payment_id": "pay_amb_0332",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "The customer does not have sufficient funds in the account to complete the payment.",
+              "field": null,
+              "source": "bank",
+              "step": "payment_authentication",
+              "reason": "insufficient_funds",
+              "metadata": {}
+            },
+            "chaos": {
+              "modes": [
+                "delayed_webhook"
+              ],
+              "delay_seconds": 45.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "row_id": "row_0333",
+      "bucket": "ambiguous",
+      "scenario": "delay_authorized",
+      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0333",
+        "amount": 14900,
+        "currency": "INR",
+        "customer_note": "Customer called about this charge",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 29800,
+        "afa_flag": false,
+        "mandate_category": "utility",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0333",
+            "amount": 14900,
+            "currency": "INR",
+            "notes": "Customer called about this charge"
+          }
+        ],
+        "at_observation": [
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0333",
+            "event": "payment.authorized",
+            "chaos": {
+              "modes": [
+                "delayed_webhook"
+              ],
+              "delay_seconds": 45.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "row_id": "row_0334",
+      "bucket": "ambiguous",
+      "scenario": "flip",
+      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0334",
+        "amount": 49900,
+        "currency": "INR",
+        "customer_note": "Customer called about this charge",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 99800,
+        "afa_flag": false,
+        "mandate_category": "utility",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0334",
+            "amount": 49900,
+            "currency": "INR",
+            "notes": "Customer called about this charge"
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0334",
             "error": {
               "code": "BAD_REQUEST_ERROR",
               "description": "The customer does not have sufficient funds in the account to complete the payment.",
@@ -15937,117 +16120,10 @@
       }
     },
     {
-      "row_id": "row_0333",
-      "bucket": "ambiguous",
-      "scenario": "silent_drop",
-      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0333",
-        "amount": 14900,
-        "currency": "INR",
-        "customer_note": "Customer called about this charge",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 29800,
-        "afa_flag": false,
-        "mandate_category": "utility",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0333",
-            "amount": 14900,
-            "currency": "INR",
-            "notes": "Customer called about this charge"
-          },
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0333",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "Payment failed due to incorrect OTP",
-              "field": "otp",
-              "source": "customer",
-              "step": "payment_authentication",
-              "reason": "incorrect_otp",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "silent_drop"
-              ],
-              "delay_seconds": 0.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ],
-        "at_observation": []
-      }
-    },
-    {
-      "row_id": "row_0334",
-      "bucket": "ambiguous",
-      "scenario": "delay_failed",
-      "intent": "the failure webhook is still in flight when the payment is observed; the status query confirms the failure and the row escalates",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0334",
-        "amount": 49900,
-        "currency": "INR",
-        "customer_note": "Customer called about this charge",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 99800,
-        "afa_flag": false,
-        "mandate_category": "utility",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0334",
-            "amount": 49900,
-            "currency": "INR",
-            "notes": "Customer called about this charge"
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0334",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "The customer does not have sufficient funds in the account to complete the payment.",
-              "field": null,
-              "source": "bank",
-              "step": "payment_authentication",
-              "reason": "insufficient_funds",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
       "row_id": "row_0335",
       "bucket": "ambiguous",
-      "scenario": "delay_authorized",
-      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
+      "scenario": "chain_gap",
+      "intent": "sequence 2 of 3 (payment.dispute.created) is silently dropped between two events that deliver cleanly; the tracer must report the hole via missing_sequences rather than treat the visible chain as complete",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0335",
@@ -16070,30 +16146,49 @@
             "amount": 249900,
             "currency": "INR",
             "notes": "Please retry after 6pm, my bank blocks daytime debits"
-          }
-        ],
-        "at_observation": [
+          },
           {
             "op": "simulate_webhook",
             "payment_id": "pay_amb_0335",
             "event": "payment.authorized",
+            "chaos": null
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0335",
+            "event": "payment.dispute.created",
             "chaos": {
               "modes": [
-                "delayed_webhook"
+                "silent_drop"
               ],
-              "delay_seconds": 45.0,
+              "delay_seconds": 0.0,
               "flip_after_seconds": 30.0,
               "duplicate_after_seconds": 1.0
             }
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0335",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "Payment failed due to incorrect OTP",
+              "field": "otp",
+              "source": "customer",
+              "step": "payment_authentication",
+              "reason": "incorrect_otp",
+              "metadata": {}
+            },
+            "chaos": null
           }
-        ]
+        ],
+        "at_observation": []
       }
     },
     {
       "row_id": "row_0336",
       "bucket": "ambiguous",
-      "scenario": "flip",
-      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
+      "scenario": "out_of_order",
+      "intent": "the Failed-to-Authorized flip again, but the later authorization is scheduled to arrive before the earlier failure; the resolver must order by sequence/occurred_at, not by delivery order, and still land on the same AUTHORIZED resolution the in-order flip case does",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0336",
@@ -16131,7 +16226,8 @@
             },
             "chaos": {
               "modes": [
-                "failed_authorized_flip"
+                "failed_authorized_flip",
+                "out_of_order_webhook"
               ],
               "delay_seconds": 0.0,
               "flip_after_seconds": 30.0,
@@ -16351,8 +16447,8 @@
     {
       "row_id": "row_0341",
       "bucket": "ambiguous",
-      "scenario": "silent_drop",
-      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
+      "scenario": "chain_gap",
+      "intent": "sequence 2 of 3 (payment.dispute.created) is silently dropped between two events that deliver cleanly; the tracer must report the hole via missing_sequences rather than treat the visible chain as complete",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0341",
@@ -16377,8 +16473,127 @@
             "notes": null
           },
           {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0341",
+            "event": "payment.authorized",
+            "chaos": null
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0341",
+            "event": "payment.dispute.created",
+            "chaos": {
+              "modes": [
+                "silent_drop"
+              ],
+              "delay_seconds": 0.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          },
+          {
             "op": "fail_payment",
             "payment_id": "pay_amb_0341",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "Payment failed due to incorrect OTP",
+              "field": "otp",
+              "source": "customer",
+              "step": "payment_authentication",
+              "reason": "incorrect_otp",
+              "metadata": {}
+            },
+            "chaos": null
+          }
+        ],
+        "at_observation": []
+      }
+    },
+    {
+      "row_id": "row_0342",
+      "bucket": "ambiguous",
+      "scenario": "out_of_order",
+      "intent": "the Failed-to-Authorized flip again, but the later authorization is scheduled to arrive before the earlier failure; the resolver must order by sequence/occurred_at, not by delivery order, and still land on the same AUTHORIZED resolution the in-order flip case does",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0342",
+        "amount": 1249900,
+        "currency": "INR",
+        "customer_note": null,
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 2499800,
+        "afa_flag": false,
+        "mandate_category": "utility",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0342",
+            "amount": 1249900,
+            "currency": "INR",
+            "notes": null
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0342",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "The customer does not have sufficient funds in the account to complete the payment.",
+              "field": null,
+              "source": "bank",
+              "step": "payment_authentication",
+              "reason": "insufficient_funds",
+              "metadata": {}
+            },
+            "chaos": {
+              "modes": [
+                "failed_authorized_flip",
+                "out_of_order_webhook"
+              ],
+              "delay_seconds": 0.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ],
+        "at_observation": []
+      }
+    },
+    {
+      "row_id": "row_0343",
+      "bucket": "ambiguous",
+      "scenario": "silent_drop",
+      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0343",
+        "amount": 1249900,
+        "currency": "INR",
+        "customer_note": "Customer called about this charge",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 2499800,
+        "afa_flag": false,
+        "mandate_category": "utility",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0343",
+            "amount": 1249900,
+            "currency": "INR",
+            "notes": "Customer called about this charge"
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0343",
             "error": {
               "code": "BAD_REQUEST_ERROR",
               "description": "Payment failed due to incorrect OTP",
@@ -16402,110 +16617,10 @@
       }
     },
     {
-      "row_id": "row_0342",
+      "row_id": "row_0344",
       "bucket": "ambiguous",
       "scenario": "delay_failed",
       "intent": "the failure webhook is still in flight when the payment is observed; the status query confirms the failure and the row escalates",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0342",
-        "amount": 1249900,
-        "currency": "INR",
-        "customer_note": null,
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 2499800,
-        "afa_flag": false,
-        "mandate_category": "utility",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0342",
-            "amount": 1249900,
-            "currency": "INR",
-            "notes": null
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0342",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "The customer does not have sufficient funds in the account to complete the payment.",
-              "field": null,
-              "source": "bank",
-              "step": "payment_authentication",
-              "reason": "insufficient_funds",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
-      "row_id": "row_0343",
-      "bucket": "ambiguous",
-      "scenario": "delay_authorized",
-      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0343",
-        "amount": 1249900,
-        "currency": "INR",
-        "customer_note": "Customer called about this charge",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 2499800,
-        "afa_flag": false,
-        "mandate_category": "utility",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0343",
-            "amount": 1249900,
-            "currency": "INR",
-            "notes": "Customer called about this charge"
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "simulate_webhook",
-            "payment_id": "pay_amb_0343",
-            "event": "payment.authorized",
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
-      "row_id": "row_0344",
-      "bucket": "ambiguous",
-      "scenario": "flip",
-      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0344",
@@ -16528,10 +16643,110 @@
             "amount": 99900,
             "currency": "INR",
             "notes": "Auto-debit for annual plan"
-          },
+          }
+        ],
+        "at_observation": [
           {
             "op": "fail_payment",
             "payment_id": "pay_amb_0344",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "The customer does not have sufficient funds in the account to complete the payment.",
+              "field": null,
+              "source": "bank",
+              "step": "payment_authentication",
+              "reason": "insufficient_funds",
+              "metadata": {}
+            },
+            "chaos": {
+              "modes": [
+                "delayed_webhook"
+              ],
+              "delay_seconds": 45.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "row_id": "row_0345",
+      "bucket": "ambiguous",
+      "scenario": "delay_authorized",
+      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0345",
+        "amount": 29900,
+        "currency": "INR",
+        "customer_note": "Card was replaced last week",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 59800,
+        "afa_flag": false,
+        "mandate_category": "general",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0345",
+            "amount": 29900,
+            "currency": "INR",
+            "notes": "Card was replaced last week"
+          }
+        ],
+        "at_observation": [
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0345",
+            "event": "payment.authorized",
+            "chaos": {
+              "modes": [
+                "delayed_webhook"
+              ],
+              "delay_seconds": 45.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "row_id": "row_0346",
+      "bucket": "ambiguous",
+      "scenario": "flip",
+      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0346",
+        "amount": 1249900,
+        "currency": "INR",
+        "customer_note": "Customer called about this charge",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 2499800,
+        "afa_flag": false,
+        "mandate_category": "utility",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0346",
+            "amount": 1249900,
+            "currency": "INR",
+            "notes": "Customer called about this charge"
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0346",
             "error": {
               "code": "BAD_REQUEST_ERROR",
               "description": "The customer does not have sufficient funds in the account to complete the payment.",
@@ -16555,117 +16770,10 @@
       }
     },
     {
-      "row_id": "row_0345",
-      "bucket": "ambiguous",
-      "scenario": "silent_drop",
-      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0345",
-        "amount": 29900,
-        "currency": "INR",
-        "customer_note": "Card was replaced last week",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 59800,
-        "afa_flag": false,
-        "mandate_category": "general",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0345",
-            "amount": 29900,
-            "currency": "INR",
-            "notes": "Card was replaced last week"
-          },
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0345",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "Payment failed due to incorrect OTP",
-              "field": "otp",
-              "source": "customer",
-              "step": "payment_authentication",
-              "reason": "incorrect_otp",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "silent_drop"
-              ],
-              "delay_seconds": 0.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ],
-        "at_observation": []
-      }
-    },
-    {
-      "row_id": "row_0346",
-      "bucket": "ambiguous",
-      "scenario": "delay_failed",
-      "intent": "the failure webhook is still in flight when the payment is observed; the status query confirms the failure and the row escalates",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0346",
-        "amount": 1249900,
-        "currency": "INR",
-        "customer_note": "Customer called about this charge",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 2499800,
-        "afa_flag": false,
-        "mandate_category": "utility",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0346",
-            "amount": 1249900,
-            "currency": "INR",
-            "notes": "Customer called about this charge"
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0346",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "The customer does not have sufficient funds in the account to complete the payment.",
-              "field": null,
-              "source": "bank",
-              "step": "payment_authentication",
-              "reason": "insufficient_funds",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
       "row_id": "row_0347",
       "bucket": "ambiguous",
-      "scenario": "delay_authorized",
-      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
+      "scenario": "chain_gap",
+      "intent": "sequence 2 of 3 (payment.dispute.created) is silently dropped between two events that deliver cleanly; the tracer must report the hole via missing_sequences rather than treat the visible chain as complete",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0347",
@@ -16688,30 +16796,49 @@
             "amount": 249900,
             "currency": "INR",
             "notes": "Monthly subscription renewal"
-          }
-        ],
-        "at_observation": [
+          },
           {
             "op": "simulate_webhook",
             "payment_id": "pay_amb_0347",
             "event": "payment.authorized",
+            "chaos": null
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0347",
+            "event": "payment.dispute.created",
             "chaos": {
               "modes": [
-                "delayed_webhook"
+                "silent_drop"
               ],
-              "delay_seconds": 45.0,
+              "delay_seconds": 0.0,
               "flip_after_seconds": 30.0,
               "duplicate_after_seconds": 1.0
             }
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0347",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "Payment failed due to incorrect OTP",
+              "field": "otp",
+              "source": "customer",
+              "step": "payment_authentication",
+              "reason": "incorrect_otp",
+              "metadata": {}
+            },
+            "chaos": null
           }
-        ]
+        ],
+        "at_observation": []
       }
     },
     {
       "row_id": "row_0348",
       "bucket": "ambiguous",
-      "scenario": "flip",
-      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
+      "scenario": "out_of_order",
+      "intent": "the Failed-to-Authorized flip again, but the later authorization is scheduled to arrive before the earlier failure; the resolver must order by sequence/occurred_at, not by delivery order, and still land on the same AUTHORIZED resolution the in-order flip case does",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0348",
@@ -16749,7 +16876,8 @@
             },
             "chaos": {
               "modes": [
-                "failed_authorized_flip"
+                "failed_authorized_flip",
+                "out_of_order_webhook"
               ],
               "delay_seconds": 0.0,
               "flip_after_seconds": 30.0,
@@ -16969,8 +17097,8 @@
     {
       "row_id": "row_0353",
       "bucket": "ambiguous",
-      "scenario": "silent_drop",
-      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
+      "scenario": "chain_gap",
+      "intent": "sequence 2 of 3 (payment.dispute.created) is silently dropped between two events that deliver cleanly; the tracer must report the hole via missing_sequences rather than treat the visible chain as complete",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0353",
@@ -16995,8 +17123,127 @@
             "notes": "Monthly subscription renewal"
           },
           {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0353",
+            "event": "payment.authorized",
+            "chaos": null
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0353",
+            "event": "payment.dispute.created",
+            "chaos": {
+              "modes": [
+                "silent_drop"
+              ],
+              "delay_seconds": 0.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          },
+          {
             "op": "fail_payment",
             "payment_id": "pay_amb_0353",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "Payment failed due to incorrect OTP",
+              "field": "otp",
+              "source": "customer",
+              "step": "payment_authentication",
+              "reason": "incorrect_otp",
+              "metadata": {}
+            },
+            "chaos": null
+          }
+        ],
+        "at_observation": []
+      }
+    },
+    {
+      "row_id": "row_0354",
+      "bucket": "ambiguous",
+      "scenario": "out_of_order",
+      "intent": "the Failed-to-Authorized flip again, but the later authorization is scheduled to arrive before the earlier failure; the resolver must order by sequence/occurred_at, not by delivery order, and still land on the same AUTHORIZED resolution the in-order flip case does",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0354",
+        "amount": 49900,
+        "currency": "INR",
+        "customer_note": "Auto-debit for annual plan",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 99800,
+        "afa_flag": false,
+        "mandate_category": "sip",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0354",
+            "amount": 49900,
+            "currency": "INR",
+            "notes": "Auto-debit for annual plan"
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0354",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "The customer does not have sufficient funds in the account to complete the payment.",
+              "field": null,
+              "source": "bank",
+              "step": "payment_authentication",
+              "reason": "insufficient_funds",
+              "metadata": {}
+            },
+            "chaos": {
+              "modes": [
+                "failed_authorized_flip",
+                "out_of_order_webhook"
+              ],
+              "delay_seconds": 0.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ],
+        "at_observation": []
+      }
+    },
+    {
+      "row_id": "row_0355",
+      "bucket": "ambiguous",
+      "scenario": "silent_drop",
+      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0355",
+        "amount": 499900,
+        "currency": "INR",
+        "customer_note": "Monthly subscription renewal",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 999800,
+        "afa_flag": false,
+        "mandate_category": "general",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0355",
+            "amount": 499900,
+            "currency": "INR",
+            "notes": "Monthly subscription renewal"
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0355",
             "error": {
               "code": "BAD_REQUEST_ERROR",
               "description": "Payment failed due to incorrect OTP",
@@ -17020,110 +17267,10 @@
       }
     },
     {
-      "row_id": "row_0354",
+      "row_id": "row_0356",
       "bucket": "ambiguous",
       "scenario": "delay_failed",
       "intent": "the failure webhook is still in flight when the payment is observed; the status query confirms the failure and the row escalates",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0354",
-        "amount": 49900,
-        "currency": "INR",
-        "customer_note": "Auto-debit for annual plan",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 99800,
-        "afa_flag": false,
-        "mandate_category": "sip",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0354",
-            "amount": 49900,
-            "currency": "INR",
-            "notes": "Auto-debit for annual plan"
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0354",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "The customer does not have sufficient funds in the account to complete the payment.",
-              "field": null,
-              "source": "bank",
-              "step": "payment_authentication",
-              "reason": "insufficient_funds",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
-      "row_id": "row_0355",
-      "bucket": "ambiguous",
-      "scenario": "delay_authorized",
-      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0355",
-        "amount": 499900,
-        "currency": "INR",
-        "customer_note": "Monthly subscription renewal",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 999800,
-        "afa_flag": false,
-        "mandate_category": "general",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0355",
-            "amount": 499900,
-            "currency": "INR",
-            "notes": "Monthly subscription renewal"
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "simulate_webhook",
-            "payment_id": "pay_amb_0355",
-            "event": "payment.authorized",
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
-      "row_id": "row_0356",
-      "bucket": "ambiguous",
-      "scenario": "flip",
-      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0356",
@@ -17146,10 +17293,110 @@
             "amount": 49900,
             "currency": "INR",
             "notes": "Please retry after 6pm, my bank blocks daytime debits"
-          },
+          }
+        ],
+        "at_observation": [
           {
             "op": "fail_payment",
             "payment_id": "pay_amb_0356",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "The customer does not have sufficient funds in the account to complete the payment.",
+              "field": null,
+              "source": "bank",
+              "step": "payment_authentication",
+              "reason": "insufficient_funds",
+              "metadata": {}
+            },
+            "chaos": {
+              "modes": [
+                "delayed_webhook"
+              ],
+              "delay_seconds": 45.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "row_id": "row_0357",
+      "bucket": "ambiguous",
+      "scenario": "delay_authorized",
+      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0357",
+        "amount": 499900,
+        "currency": "INR",
+        "customer_note": "Card was replaced last week",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 999800,
+        "afa_flag": false,
+        "mandate_category": "general",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0357",
+            "amount": 499900,
+            "currency": "INR",
+            "notes": "Card was replaced last week"
+          }
+        ],
+        "at_observation": [
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0357",
+            "event": "payment.authorized",
+            "chaos": {
+              "modes": [
+                "delayed_webhook"
+              ],
+              "delay_seconds": 45.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "row_id": "row_0358",
+      "bucket": "ambiguous",
+      "scenario": "flip",
+      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0358",
+        "amount": 14900,
+        "currency": "INR",
+        "customer_note": "Card was replaced last week",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 29800,
+        "afa_flag": false,
+        "mandate_category": "sip",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0358",
+            "amount": 14900,
+            "currency": "INR",
+            "notes": "Card was replaced last week"
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0358",
             "error": {
               "code": "BAD_REQUEST_ERROR",
               "description": "The customer does not have sufficient funds in the account to complete the payment.",
@@ -17173,117 +17420,10 @@
       }
     },
     {
-      "row_id": "row_0357",
-      "bucket": "ambiguous",
-      "scenario": "silent_drop",
-      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0357",
-        "amount": 499900,
-        "currency": "INR",
-        "customer_note": "Card was replaced last week",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 999800,
-        "afa_flag": false,
-        "mandate_category": "general",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0357",
-            "amount": 499900,
-            "currency": "INR",
-            "notes": "Card was replaced last week"
-          },
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0357",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "Payment failed due to incorrect OTP",
-              "field": "otp",
-              "source": "customer",
-              "step": "payment_authentication",
-              "reason": "incorrect_otp",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "silent_drop"
-              ],
-              "delay_seconds": 0.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ],
-        "at_observation": []
-      }
-    },
-    {
-      "row_id": "row_0358",
-      "bucket": "ambiguous",
-      "scenario": "delay_failed",
-      "intent": "the failure webhook is still in flight when the payment is observed; the status query confirms the failure and the row escalates",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0358",
-        "amount": 14900,
-        "currency": "INR",
-        "customer_note": "Card was replaced last week",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 29800,
-        "afa_flag": false,
-        "mandate_category": "sip",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0358",
-            "amount": 14900,
-            "currency": "INR",
-            "notes": "Card was replaced last week"
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0358",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "The customer does not have sufficient funds in the account to complete the payment.",
-              "field": null,
-              "source": "bank",
-              "step": "payment_authentication",
-              "reason": "insufficient_funds",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
       "row_id": "row_0359",
       "bucket": "ambiguous",
-      "scenario": "delay_authorized",
-      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
+      "scenario": "chain_gap",
+      "intent": "sequence 2 of 3 (payment.dispute.created) is silently dropped between two events that deliver cleanly; the tracer must report the hole via missing_sequences rather than treat the visible chain as complete",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0359",
@@ -17306,30 +17446,49 @@
             "amount": 1249900,
             "currency": "INR",
             "notes": "Customer called about this charge"
-          }
-        ],
-        "at_observation": [
+          },
           {
             "op": "simulate_webhook",
             "payment_id": "pay_amb_0359",
             "event": "payment.authorized",
+            "chaos": null
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0359",
+            "event": "payment.dispute.created",
             "chaos": {
               "modes": [
-                "delayed_webhook"
+                "silent_drop"
               ],
-              "delay_seconds": 45.0,
+              "delay_seconds": 0.0,
               "flip_after_seconds": 30.0,
               "duplicate_after_seconds": 1.0
             }
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0359",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "Payment failed due to incorrect OTP",
+              "field": "otp",
+              "source": "customer",
+              "step": "payment_authentication",
+              "reason": "incorrect_otp",
+              "metadata": {}
+            },
+            "chaos": null
           }
-        ]
+        ],
+        "at_observation": []
       }
     },
     {
       "row_id": "row_0360",
       "bucket": "ambiguous",
-      "scenario": "flip",
-      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
+      "scenario": "out_of_order",
+      "intent": "the Failed-to-Authorized flip again, but the later authorization is scheduled to arrive before the earlier failure; the resolver must order by sequence/occurred_at, not by delivery order, and still land on the same AUTHORIZED resolution the in-order flip case does",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0360",
@@ -17367,7 +17526,8 @@
             },
             "chaos": {
               "modes": [
-                "failed_authorized_flip"
+                "failed_authorized_flip",
+                "out_of_order_webhook"
               ],
               "delay_seconds": 0.0,
               "flip_after_seconds": 30.0,
@@ -17587,8 +17747,8 @@
     {
       "row_id": "row_0365",
       "bucket": "ambiguous",
-      "scenario": "silent_drop",
-      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
+      "scenario": "chain_gap",
+      "intent": "sequence 2 of 3 (payment.dispute.created) is silently dropped between two events that deliver cleanly; the tracer must report the hole via missing_sequences rather than treat the visible chain as complete",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0365",
@@ -17613,8 +17773,127 @@
             "notes": "Please retry after 6pm, my bank blocks daytime debits"
           },
           {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0365",
+            "event": "payment.authorized",
+            "chaos": null
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0365",
+            "event": "payment.dispute.created",
+            "chaos": {
+              "modes": [
+                "silent_drop"
+              ],
+              "delay_seconds": 0.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          },
+          {
             "op": "fail_payment",
             "payment_id": "pay_amb_0365",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "Payment failed due to incorrect OTP",
+              "field": "otp",
+              "source": "customer",
+              "step": "payment_authentication",
+              "reason": "incorrect_otp",
+              "metadata": {}
+            },
+            "chaos": null
+          }
+        ],
+        "at_observation": []
+      }
+    },
+    {
+      "row_id": "row_0366",
+      "bucket": "ambiguous",
+      "scenario": "out_of_order",
+      "intent": "the Failed-to-Authorized flip again, but the later authorization is scheduled to arrive before the earlier failure; the resolver must order by sequence/occurred_at, not by delivery order, and still land on the same AUTHORIZED resolution the in-order flip case does",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0366",
+        "amount": 499900,
+        "currency": "INR",
+        "customer_note": "Please retry after 6pm, my bank blocks daytime debits",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 999800,
+        "afa_flag": false,
+        "mandate_category": "utility",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0366",
+            "amount": 499900,
+            "currency": "INR",
+            "notes": "Please retry after 6pm, my bank blocks daytime debits"
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0366",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "The customer does not have sufficient funds in the account to complete the payment.",
+              "field": null,
+              "source": "bank",
+              "step": "payment_authentication",
+              "reason": "insufficient_funds",
+              "metadata": {}
+            },
+            "chaos": {
+              "modes": [
+                "failed_authorized_flip",
+                "out_of_order_webhook"
+              ],
+              "delay_seconds": 0.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ],
+        "at_observation": []
+      }
+    },
+    {
+      "row_id": "row_0367",
+      "bucket": "ambiguous",
+      "scenario": "silent_drop",
+      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0367",
+        "amount": 499900,
+        "currency": "INR",
+        "customer_note": null,
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 999800,
+        "afa_flag": false,
+        "mandate_category": "sip",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0367",
+            "amount": 499900,
+            "currency": "INR",
+            "notes": null
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0367",
             "error": {
               "code": "BAD_REQUEST_ERROR",
               "description": "Payment failed due to incorrect OTP",
@@ -17638,110 +17917,10 @@
       }
     },
     {
-      "row_id": "row_0366",
+      "row_id": "row_0368",
       "bucket": "ambiguous",
       "scenario": "delay_failed",
       "intent": "the failure webhook is still in flight when the payment is observed; the status query confirms the failure and the row escalates",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0366",
-        "amount": 499900,
-        "currency": "INR",
-        "customer_note": "Please retry after 6pm, my bank blocks daytime debits",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 999800,
-        "afa_flag": false,
-        "mandate_category": "utility",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0366",
-            "amount": 499900,
-            "currency": "INR",
-            "notes": "Please retry after 6pm, my bank blocks daytime debits"
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0366",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "The customer does not have sufficient funds in the account to complete the payment.",
-              "field": null,
-              "source": "bank",
-              "step": "payment_authentication",
-              "reason": "insufficient_funds",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
-      "row_id": "row_0367",
-      "bucket": "ambiguous",
-      "scenario": "delay_authorized",
-      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0367",
-        "amount": 499900,
-        "currency": "INR",
-        "customer_note": null,
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 999800,
-        "afa_flag": false,
-        "mandate_category": "sip",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0367",
-            "amount": 499900,
-            "currency": "INR",
-            "notes": null
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "simulate_webhook",
-            "payment_id": "pay_amb_0367",
-            "event": "payment.authorized",
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
-      "row_id": "row_0368",
-      "bucket": "ambiguous",
-      "scenario": "flip",
-      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0368",
@@ -17764,10 +17943,110 @@
             "amount": 249900,
             "currency": "INR",
             "notes": "Customer called about this charge"
-          },
+          }
+        ],
+        "at_observation": [
           {
             "op": "fail_payment",
             "payment_id": "pay_amb_0368",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "The customer does not have sufficient funds in the account to complete the payment.",
+              "field": null,
+              "source": "bank",
+              "step": "payment_authentication",
+              "reason": "insufficient_funds",
+              "metadata": {}
+            },
+            "chaos": {
+              "modes": [
+                "delayed_webhook"
+              ],
+              "delay_seconds": 45.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "row_id": "row_0369",
+      "bucket": "ambiguous",
+      "scenario": "delay_authorized",
+      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0369",
+        "amount": 499900,
+        "currency": "INR",
+        "customer_note": "Monthly subscription renewal",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 999800,
+        "afa_flag": false,
+        "mandate_category": "utility",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0369",
+            "amount": 499900,
+            "currency": "INR",
+            "notes": "Monthly subscription renewal"
+          }
+        ],
+        "at_observation": [
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0369",
+            "event": "payment.authorized",
+            "chaos": {
+              "modes": [
+                "delayed_webhook"
+              ],
+              "delay_seconds": 45.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "row_id": "row_0370",
+      "bucket": "ambiguous",
+      "scenario": "flip",
+      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0370",
+        "amount": 149900,
+        "currency": "INR",
+        "customer_note": "Please retry after 6pm, my bank blocks daytime debits",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 299800,
+        "afa_flag": false,
+        "mandate_category": "insurance",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0370",
+            "amount": 149900,
+            "currency": "INR",
+            "notes": "Please retry after 6pm, my bank blocks daytime debits"
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0370",
             "error": {
               "code": "BAD_REQUEST_ERROR",
               "description": "The customer does not have sufficient funds in the account to complete the payment.",
@@ -17791,117 +18070,10 @@
       }
     },
     {
-      "row_id": "row_0369",
-      "bucket": "ambiguous",
-      "scenario": "silent_drop",
-      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0369",
-        "amount": 499900,
-        "currency": "INR",
-        "customer_note": "Monthly subscription renewal",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 999800,
-        "afa_flag": false,
-        "mandate_category": "utility",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0369",
-            "amount": 499900,
-            "currency": "INR",
-            "notes": "Monthly subscription renewal"
-          },
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0369",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "Payment failed due to incorrect OTP",
-              "field": "otp",
-              "source": "customer",
-              "step": "payment_authentication",
-              "reason": "incorrect_otp",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "silent_drop"
-              ],
-              "delay_seconds": 0.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ],
-        "at_observation": []
-      }
-    },
-    {
-      "row_id": "row_0370",
-      "bucket": "ambiguous",
-      "scenario": "delay_failed",
-      "intent": "the failure webhook is still in flight when the payment is observed; the status query confirms the failure and the row escalates",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0370",
-        "amount": 149900,
-        "currency": "INR",
-        "customer_note": "Please retry after 6pm, my bank blocks daytime debits",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 299800,
-        "afa_flag": false,
-        "mandate_category": "insurance",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0370",
-            "amount": 149900,
-            "currency": "INR",
-            "notes": "Please retry after 6pm, my bank blocks daytime debits"
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0370",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "The customer does not have sufficient funds in the account to complete the payment.",
-              "field": null,
-              "source": "bank",
-              "step": "payment_authentication",
-              "reason": "insufficient_funds",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
       "row_id": "row_0371",
       "bucket": "ambiguous",
-      "scenario": "delay_authorized",
-      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
+      "scenario": "chain_gap",
+      "intent": "sequence 2 of 3 (payment.dispute.created) is silently dropped between two events that deliver cleanly; the tracer must report the hole via missing_sequences rather than treat the visible chain as complete",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0371",
@@ -17924,30 +18096,49 @@
             "amount": 249900,
             "currency": "INR",
             "notes": null
-          }
-        ],
-        "at_observation": [
+          },
           {
             "op": "simulate_webhook",
             "payment_id": "pay_amb_0371",
             "event": "payment.authorized",
+            "chaos": null
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0371",
+            "event": "payment.dispute.created",
             "chaos": {
               "modes": [
-                "delayed_webhook"
+                "silent_drop"
               ],
-              "delay_seconds": 45.0,
+              "delay_seconds": 0.0,
               "flip_after_seconds": 30.0,
               "duplicate_after_seconds": 1.0
             }
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0371",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "Payment failed due to incorrect OTP",
+              "field": "otp",
+              "source": "customer",
+              "step": "payment_authentication",
+              "reason": "incorrect_otp",
+              "metadata": {}
+            },
+            "chaos": null
           }
-        ]
+        ],
+        "at_observation": []
       }
     },
     {
       "row_id": "row_0372",
       "bucket": "ambiguous",
-      "scenario": "flip",
-      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
+      "scenario": "out_of_order",
+      "intent": "the Failed-to-Authorized flip again, but the later authorization is scheduled to arrive before the earlier failure; the resolver must order by sequence/occurred_at, not by delivery order, and still land on the same AUTHORIZED resolution the in-order flip case does",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0372",
@@ -17985,7 +18176,8 @@
             },
             "chaos": {
               "modes": [
-                "failed_authorized_flip"
+                "failed_authorized_flip",
+                "out_of_order_webhook"
               ],
               "delay_seconds": 0.0,
               "flip_after_seconds": 30.0,
@@ -18205,8 +18397,8 @@
     {
       "row_id": "row_0377",
       "bucket": "ambiguous",
-      "scenario": "silent_drop",
-      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
+      "scenario": "chain_gap",
+      "intent": "sequence 2 of 3 (payment.dispute.created) is silently dropped between two events that deliver cleanly; the tracer must report the hole via missing_sequences rather than treat the visible chain as complete",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0377",
@@ -18231,8 +18423,127 @@
             "notes": null
           },
           {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0377",
+            "event": "payment.authorized",
+            "chaos": null
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0377",
+            "event": "payment.dispute.created",
+            "chaos": {
+              "modes": [
+                "silent_drop"
+              ],
+              "delay_seconds": 0.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          },
+          {
             "op": "fail_payment",
             "payment_id": "pay_amb_0377",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "Payment failed due to incorrect OTP",
+              "field": "otp",
+              "source": "customer",
+              "step": "payment_authentication",
+              "reason": "incorrect_otp",
+              "metadata": {}
+            },
+            "chaos": null
+          }
+        ],
+        "at_observation": []
+      }
+    },
+    {
+      "row_id": "row_0378",
+      "bucket": "ambiguous",
+      "scenario": "out_of_order",
+      "intent": "the Failed-to-Authorized flip again, but the later authorization is scheduled to arrive before the earlier failure; the resolver must order by sequence/occurred_at, not by delivery order, and still land on the same AUTHORIZED resolution the in-order flip case does",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0378",
+        "amount": 49900,
+        "currency": "INR",
+        "customer_note": "Card was replaced last week",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 99800,
+        "afa_flag": false,
+        "mandate_category": "insurance",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0378",
+            "amount": 49900,
+            "currency": "INR",
+            "notes": "Card was replaced last week"
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0378",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "The customer does not have sufficient funds in the account to complete the payment.",
+              "field": null,
+              "source": "bank",
+              "step": "payment_authentication",
+              "reason": "insufficient_funds",
+              "metadata": {}
+            },
+            "chaos": {
+              "modes": [
+                "failed_authorized_flip",
+                "out_of_order_webhook"
+              ],
+              "delay_seconds": 0.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ],
+        "at_observation": []
+      }
+    },
+    {
+      "row_id": "row_0379",
+      "bucket": "ambiguous",
+      "scenario": "silent_drop",
+      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0379",
+        "amount": 14900,
+        "currency": "INR",
+        "customer_note": "Monthly subscription renewal",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 29800,
+        "afa_flag": false,
+        "mandate_category": "insurance",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0379",
+            "amount": 14900,
+            "currency": "INR",
+            "notes": "Monthly subscription renewal"
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0379",
             "error": {
               "code": "BAD_REQUEST_ERROR",
               "description": "Payment failed due to incorrect OTP",
@@ -18256,110 +18567,10 @@
       }
     },
     {
-      "row_id": "row_0378",
+      "row_id": "row_0380",
       "bucket": "ambiguous",
       "scenario": "delay_failed",
       "intent": "the failure webhook is still in flight when the payment is observed; the status query confirms the failure and the row escalates",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0378",
-        "amount": 49900,
-        "currency": "INR",
-        "customer_note": "Card was replaced last week",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 99800,
-        "afa_flag": false,
-        "mandate_category": "insurance",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0378",
-            "amount": 49900,
-            "currency": "INR",
-            "notes": "Card was replaced last week"
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0378",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "The customer does not have sufficient funds in the account to complete the payment.",
-              "field": null,
-              "source": "bank",
-              "step": "payment_authentication",
-              "reason": "insufficient_funds",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
-      "row_id": "row_0379",
-      "bucket": "ambiguous",
-      "scenario": "delay_authorized",
-      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0379",
-        "amount": 14900,
-        "currency": "INR",
-        "customer_note": "Monthly subscription renewal",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 29800,
-        "afa_flag": false,
-        "mandate_category": "insurance",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0379",
-            "amount": 14900,
-            "currency": "INR",
-            "notes": "Monthly subscription renewal"
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "simulate_webhook",
-            "payment_id": "pay_amb_0379",
-            "event": "payment.authorized",
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
-      "row_id": "row_0380",
-      "bucket": "ambiguous",
-      "scenario": "flip",
-      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0380",
@@ -18382,10 +18593,110 @@
             "amount": 149900,
             "currency": "INR",
             "notes": "Please retry after 6pm, my bank blocks daytime debits"
-          },
+          }
+        ],
+        "at_observation": [
           {
             "op": "fail_payment",
             "payment_id": "pay_amb_0380",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "The customer does not have sufficient funds in the account to complete the payment.",
+              "field": null,
+              "source": "bank",
+              "step": "payment_authentication",
+              "reason": "insufficient_funds",
+              "metadata": {}
+            },
+            "chaos": {
+              "modes": [
+                "delayed_webhook"
+              ],
+              "delay_seconds": 45.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "row_id": "row_0381",
+      "bucket": "ambiguous",
+      "scenario": "delay_authorized",
+      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0381",
+        "amount": 1249900,
+        "currency": "INR",
+        "customer_note": "Customer called about this charge",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 2499800,
+        "afa_flag": false,
+        "mandate_category": "insurance",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0381",
+            "amount": 1249900,
+            "currency": "INR",
+            "notes": "Customer called about this charge"
+          }
+        ],
+        "at_observation": [
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0381",
+            "event": "payment.authorized",
+            "chaos": {
+              "modes": [
+                "delayed_webhook"
+              ],
+              "delay_seconds": 45.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "row_id": "row_0382",
+      "bucket": "ambiguous",
+      "scenario": "flip",
+      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0382",
+        "amount": 14900,
+        "currency": "INR",
+        "customer_note": "Card was replaced last week",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 29800,
+        "afa_flag": false,
+        "mandate_category": "sip",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0382",
+            "amount": 14900,
+            "currency": "INR",
+            "notes": "Card was replaced last week"
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0382",
             "error": {
               "code": "BAD_REQUEST_ERROR",
               "description": "The customer does not have sufficient funds in the account to complete the payment.",
@@ -18409,117 +18720,10 @@
       }
     },
     {
-      "row_id": "row_0381",
-      "bucket": "ambiguous",
-      "scenario": "silent_drop",
-      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0381",
-        "amount": 1249900,
-        "currency": "INR",
-        "customer_note": "Customer called about this charge",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 2499800,
-        "afa_flag": false,
-        "mandate_category": "insurance",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0381",
-            "amount": 1249900,
-            "currency": "INR",
-            "notes": "Customer called about this charge"
-          },
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0381",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "Payment failed due to incorrect OTP",
-              "field": "otp",
-              "source": "customer",
-              "step": "payment_authentication",
-              "reason": "incorrect_otp",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "silent_drop"
-              ],
-              "delay_seconds": 0.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ],
-        "at_observation": []
-      }
-    },
-    {
-      "row_id": "row_0382",
-      "bucket": "ambiguous",
-      "scenario": "delay_failed",
-      "intent": "the failure webhook is still in flight when the payment is observed; the status query confirms the failure and the row escalates",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0382",
-        "amount": 14900,
-        "currency": "INR",
-        "customer_note": "Card was replaced last week",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 29800,
-        "afa_flag": false,
-        "mandate_category": "sip",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0382",
-            "amount": 14900,
-            "currency": "INR",
-            "notes": "Card was replaced last week"
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0382",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "The customer does not have sufficient funds in the account to complete the payment.",
-              "field": null,
-              "source": "bank",
-              "step": "payment_authentication",
-              "reason": "insufficient_funds",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
       "row_id": "row_0383",
       "bucket": "ambiguous",
-      "scenario": "delay_authorized",
-      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
+      "scenario": "chain_gap",
+      "intent": "sequence 2 of 3 (payment.dispute.created) is silently dropped between two events that deliver cleanly; the tracer must report the hole via missing_sequences rather than treat the visible chain as complete",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0383",
@@ -18542,30 +18746,49 @@
             "amount": 499900,
             "currency": "INR",
             "notes": "Card was replaced last week"
-          }
-        ],
-        "at_observation": [
+          },
           {
             "op": "simulate_webhook",
             "payment_id": "pay_amb_0383",
             "event": "payment.authorized",
+            "chaos": null
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0383",
+            "event": "payment.dispute.created",
             "chaos": {
               "modes": [
-                "delayed_webhook"
+                "silent_drop"
               ],
-              "delay_seconds": 45.0,
+              "delay_seconds": 0.0,
               "flip_after_seconds": 30.0,
               "duplicate_after_seconds": 1.0
             }
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0383",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "Payment failed due to incorrect OTP",
+              "field": "otp",
+              "source": "customer",
+              "step": "payment_authentication",
+              "reason": "incorrect_otp",
+              "metadata": {}
+            },
+            "chaos": null
           }
-        ]
+        ],
+        "at_observation": []
       }
     },
     {
       "row_id": "row_0384",
       "bucket": "ambiguous",
-      "scenario": "flip",
-      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
+      "scenario": "out_of_order",
+      "intent": "the Failed-to-Authorized flip again, but the later authorization is scheduled to arrive before the earlier failure; the resolver must order by sequence/occurred_at, not by delivery order, and still land on the same AUTHORIZED resolution the in-order flip case does",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0384",
@@ -18603,7 +18826,8 @@
             },
             "chaos": {
               "modes": [
-                "failed_authorized_flip"
+                "failed_authorized_flip",
+                "out_of_order_webhook"
               ],
               "delay_seconds": 0.0,
               "flip_after_seconds": 30.0,
@@ -18823,8 +19047,8 @@
     {
       "row_id": "row_0389",
       "bucket": "ambiguous",
-      "scenario": "silent_drop",
-      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
+      "scenario": "chain_gap",
+      "intent": "sequence 2 of 3 (payment.dispute.created) is silently dropped between two events that deliver cleanly; the tracer must report the hole via missing_sequences rather than treat the visible chain as complete",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0389",
@@ -18849,8 +19073,127 @@
             "notes": "Auto-debit for annual plan"
           },
           {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0389",
+            "event": "payment.authorized",
+            "chaos": null
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0389",
+            "event": "payment.dispute.created",
+            "chaos": {
+              "modes": [
+                "silent_drop"
+              ],
+              "delay_seconds": 0.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          },
+          {
             "op": "fail_payment",
             "payment_id": "pay_amb_0389",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "Payment failed due to incorrect OTP",
+              "field": "otp",
+              "source": "customer",
+              "step": "payment_authentication",
+              "reason": "incorrect_otp",
+              "metadata": {}
+            },
+            "chaos": null
+          }
+        ],
+        "at_observation": []
+      }
+    },
+    {
+      "row_id": "row_0390",
+      "bucket": "ambiguous",
+      "scenario": "out_of_order",
+      "intent": "the Failed-to-Authorized flip again, but the later authorization is scheduled to arrive before the earlier failure; the resolver must order by sequence/occurred_at, not by delivery order, and still land on the same AUTHORIZED resolution the in-order flip case does",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0390",
+        "amount": 1249900,
+        "currency": "INR",
+        "customer_note": "Customer called about this charge",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 2499800,
+        "afa_flag": false,
+        "mandate_category": "utility",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0390",
+            "amount": 1249900,
+            "currency": "INR",
+            "notes": "Customer called about this charge"
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0390",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "The customer does not have sufficient funds in the account to complete the payment.",
+              "field": null,
+              "source": "bank",
+              "step": "payment_authentication",
+              "reason": "insufficient_funds",
+              "metadata": {}
+            },
+            "chaos": {
+              "modes": [
+                "failed_authorized_flip",
+                "out_of_order_webhook"
+              ],
+              "delay_seconds": 0.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ],
+        "at_observation": []
+      }
+    },
+    {
+      "row_id": "row_0391",
+      "bucket": "ambiguous",
+      "scenario": "silent_drop",
+      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0391",
+        "amount": 14900,
+        "currency": "INR",
+        "customer_note": "Please retry after 6pm, my bank blocks daytime debits",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 29800,
+        "afa_flag": false,
+        "mandate_category": "insurance",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0391",
+            "amount": 14900,
+            "currency": "INR",
+            "notes": "Please retry after 6pm, my bank blocks daytime debits"
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0391",
             "error": {
               "code": "BAD_REQUEST_ERROR",
               "description": "Payment failed due to incorrect OTP",
@@ -18874,110 +19217,10 @@
       }
     },
     {
-      "row_id": "row_0390",
+      "row_id": "row_0392",
       "bucket": "ambiguous",
       "scenario": "delay_failed",
       "intent": "the failure webhook is still in flight when the payment is observed; the status query confirms the failure and the row escalates",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0390",
-        "amount": 1249900,
-        "currency": "INR",
-        "customer_note": "Customer called about this charge",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 2499800,
-        "afa_flag": false,
-        "mandate_category": "utility",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0390",
-            "amount": 1249900,
-            "currency": "INR",
-            "notes": "Customer called about this charge"
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0390",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "The customer does not have sufficient funds in the account to complete the payment.",
-              "field": null,
-              "source": "bank",
-              "step": "payment_authentication",
-              "reason": "insufficient_funds",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
-      "row_id": "row_0391",
-      "bucket": "ambiguous",
-      "scenario": "delay_authorized",
-      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0391",
-        "amount": 14900,
-        "currency": "INR",
-        "customer_note": "Please retry after 6pm, my bank blocks daytime debits",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 29800,
-        "afa_flag": false,
-        "mandate_category": "insurance",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0391",
-            "amount": 14900,
-            "currency": "INR",
-            "notes": "Please retry after 6pm, my bank blocks daytime debits"
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "simulate_webhook",
-            "payment_id": "pay_amb_0391",
-            "event": "payment.authorized",
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
-      "row_id": "row_0392",
-      "bucket": "ambiguous",
-      "scenario": "flip",
-      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0392",
@@ -19000,10 +19243,110 @@
             "amount": 14900,
             "currency": "INR",
             "notes": "Customer called about this charge"
-          },
+          }
+        ],
+        "at_observation": [
           {
             "op": "fail_payment",
             "payment_id": "pay_amb_0392",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "The customer does not have sufficient funds in the account to complete the payment.",
+              "field": null,
+              "source": "bank",
+              "step": "payment_authentication",
+              "reason": "insufficient_funds",
+              "metadata": {}
+            },
+            "chaos": {
+              "modes": [
+                "delayed_webhook"
+              ],
+              "delay_seconds": 45.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "row_id": "row_0393",
+      "bucket": "ambiguous",
+      "scenario": "delay_authorized",
+      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0393",
+        "amount": 899900,
+        "currency": "INR",
+        "customer_note": "Customer called about this charge",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 1799800,
+        "afa_flag": false,
+        "mandate_category": "insurance",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0393",
+            "amount": 899900,
+            "currency": "INR",
+            "notes": "Customer called about this charge"
+          }
+        ],
+        "at_observation": [
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0393",
+            "event": "payment.authorized",
+            "chaos": {
+              "modes": [
+                "delayed_webhook"
+              ],
+              "delay_seconds": 45.0,
+              "flip_after_seconds": 30.0,
+              "duplicate_after_seconds": 1.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "row_id": "row_0394",
+      "bucket": "ambiguous",
+      "scenario": "flip",
+      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
+      "expected_policy_rule": null,
+      "batch_event": {
+        "payment_id": "pay_amb_0394",
+        "amount": 499900,
+        "currency": "INR",
+        "customer_note": "Please retry after 6pm, my bank blocks daytime debits",
+        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
+        "mandate_ceiling": 999800,
+        "afa_flag": false,
+        "mandate_category": "insurance",
+        "opted_out": false,
+        "retry_count": 0,
+        "discount_amount": 0
+      },
+      "gateway_seed": {
+        "setup": [
+          {
+            "op": "create_payment",
+            "payment_id": "pay_amb_0394",
+            "amount": 499900,
+            "currency": "INR",
+            "notes": "Please retry after 6pm, my bank blocks daytime debits"
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0394",
             "error": {
               "code": "BAD_REQUEST_ERROR",
               "description": "The customer does not have sufficient funds in the account to complete the payment.",
@@ -19027,117 +19370,10 @@
       }
     },
     {
-      "row_id": "row_0393",
-      "bucket": "ambiguous",
-      "scenario": "silent_drop",
-      "intent": "no webhook is ever delivered; past the silence threshold this must resolve to PENDING_WEBHOOK and be marked ambiguous, not guessed at",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0393",
-        "amount": 899900,
-        "currency": "INR",
-        "customer_note": "Customer called about this charge",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 1799800,
-        "afa_flag": false,
-        "mandate_category": "insurance",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0393",
-            "amount": 899900,
-            "currency": "INR",
-            "notes": "Customer called about this charge"
-          },
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0393",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "Payment failed due to incorrect OTP",
-              "field": "otp",
-              "source": "customer",
-              "step": "payment_authentication",
-              "reason": "incorrect_otp",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "silent_drop"
-              ],
-              "delay_seconds": 0.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ],
-        "at_observation": []
-      }
-    },
-    {
-      "row_id": "row_0394",
-      "bucket": "ambiguous",
-      "scenario": "delay_failed",
-      "intent": "the failure webhook is still in flight when the payment is observed; the status query confirms the failure and the row escalates",
-      "expected_policy_rule": null,
-      "batch_event": {
-        "payment_id": "pay_amb_0394",
-        "amount": 499900,
-        "currency": "INR",
-        "customer_note": "Please retry after 6pm, my bank blocks daytime debits",
-        "pre_debit_notice_sent_at": "2026-04-20T04:00:00+00:00",
-        "mandate_ceiling": 999800,
-        "afa_flag": false,
-        "mandate_category": "insurance",
-        "opted_out": false,
-        "retry_count": 0,
-        "discount_amount": 0
-      },
-      "gateway_seed": {
-        "setup": [
-          {
-            "op": "create_payment",
-            "payment_id": "pay_amb_0394",
-            "amount": 499900,
-            "currency": "INR",
-            "notes": "Please retry after 6pm, my bank blocks daytime debits"
-          }
-        ],
-        "at_observation": [
-          {
-            "op": "fail_payment",
-            "payment_id": "pay_amb_0394",
-            "error": {
-              "code": "BAD_REQUEST_ERROR",
-              "description": "The customer does not have sufficient funds in the account to complete the payment.",
-              "field": null,
-              "source": "bank",
-              "step": "payment_authentication",
-              "reason": "insufficient_funds",
-              "metadata": {}
-            },
-            "chaos": {
-              "modes": [
-                "delayed_webhook"
-              ],
-              "delay_seconds": 45.0,
-              "flip_after_seconds": 30.0,
-              "duplicate_after_seconds": 1.0
-            }
-          }
-        ]
-      }
-    },
-    {
       "row_id": "row_0395",
       "bucket": "ambiguous",
-      "scenario": "delay_authorized",
-      "intent": "silence that is actually a slow success; the status query reconciles the payment rather than acting on it",
+      "scenario": "chain_gap",
+      "intent": "sequence 2 of 3 (payment.dispute.created) is silently dropped between two events that deliver cleanly; the tracer must report the hole via missing_sequences rather than treat the visible chain as complete",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0395",
@@ -19160,30 +19396,49 @@
             "amount": 149900,
             "currency": "INR",
             "notes": "Customer called about this charge"
-          }
-        ],
-        "at_observation": [
+          },
           {
             "op": "simulate_webhook",
             "payment_id": "pay_amb_0395",
             "event": "payment.authorized",
+            "chaos": null
+          },
+          {
+            "op": "simulate_webhook",
+            "payment_id": "pay_amb_0395",
+            "event": "payment.dispute.created",
             "chaos": {
               "modes": [
-                "delayed_webhook"
+                "silent_drop"
               ],
-              "delay_seconds": 45.0,
+              "delay_seconds": 0.0,
               "flip_after_seconds": 30.0,
               "duplicate_after_seconds": 1.0
             }
+          },
+          {
+            "op": "fail_payment",
+            "payment_id": "pay_amb_0395",
+            "error": {
+              "code": "BAD_REQUEST_ERROR",
+              "description": "Payment failed due to incorrect OTP",
+              "field": "otp",
+              "source": "customer",
+              "step": "payment_authentication",
+              "reason": "incorrect_otp",
+              "metadata": {}
+            },
+            "chaos": null
           }
-        ]
+        ],
+        "at_observation": []
       }
     },
     {
       "row_id": "row_0396",
       "bucket": "ambiguous",
-      "scenario": "flip",
-      "intent": "the documented Failed-to-Authorized flip; the later authorization supersedes the failure and no recovery action is required",
+      "scenario": "out_of_order",
+      "intent": "the Failed-to-Authorized flip again, but the later authorization is scheduled to arrive before the earlier failure; the resolver must order by sequence/occurred_at, not by delivery order, and still land on the same AUTHORIZED resolution the in-order flip case does",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0396",
@@ -19221,7 +19476,8 @@
             },
             "chaos": {
               "modes": [
-                "failed_authorized_flip"
+                "failed_authorized_flip",
+                "out_of_order_webhook"
               ],
               "delay_seconds": 0.0,
               "flip_after_seconds": 30.0,

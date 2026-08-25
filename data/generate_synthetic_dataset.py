@@ -550,7 +550,9 @@ STALE_SUCCESS_ROWS = 4
 
 
 def build_ambiguous(count: int, rng: random.Random, start: int) -> List[Dict[str, Any]]:
-    """Five sub-cases, covering both documented ambiguous behaviours.
+    """Seven sub-cases, covering both documented ambiguous behaviours plus two
+    mechanisms that were previously unit-tested but never exercised at the
+    dataset level (README's "Benchmark scope" section named them explicitly).
 
     `silent_drop`      -- the webhook never fires. Only silence is observable,
                           and past the threshold that silence is a signal.
@@ -561,6 +563,23 @@ def build_ambiguous(count: int, rng: random.Random, start: int) -> List[Dict[str
                           The query finds the payment succeeded all along.
     `flip`             -- the documented Failed-to-Authorized flip: a later
                           authorization supersedes the earlier failure.
+    `chain_gap`        -- an intermediate `payment.dispute.created` webhook
+                          (sequence 2 of 3) is silently dropped between two
+                          that deliver cleanly. `payment.dispute.created` maps
+                          to no state change either way, so dropping it cannot
+                          make the seed illegal regardless of payment state --
+                          it exists here purely to leave a hole. Delivered
+                          sequences are [1, 3]; the tracer's structural gap
+                          rule has to report the hole rather than treat the
+                          visible authorized->failed chain as complete.
+    `out_of_order`     -- the Failed-to-Authorized flip again, but with
+                          out-of-order delivery chaos layered on: the later
+                          (higher-sequence) authorization is scheduled to
+                          *arrive* before the earlier failure, even though its
+                          `occurred_at`/sequence are still later. Proves the
+                          resolver orders by sequence, not by arrival --
+                          resolver.py sorts on (occurred_at, sequence), never
+                          on delivery/list order.
 
     `verify_mismatch_stale_success`
                        -- the failure webhook was delivered, but the later
@@ -580,7 +599,14 @@ def build_ambiguous(count: int, rng: random.Random, start: int) -> List[Dict[str
     their values: every sub-case draws the same fields in the same order, so
     the random stream is identical either way.
     """
-    sub_cases = ("silent_drop", "delay_failed", "delay_authorized", "flip")
+    sub_cases = (
+        "silent_drop",
+        "delay_failed",
+        "delay_authorized",
+        "flip",
+        "chain_gap",
+        "out_of_order",
+    )
     cycled = max(count - STALE_SUCCESS_ROWS, 0)
     rows: List[Dict[str, Any]] = []
 
@@ -647,6 +673,38 @@ def build_ambiguous(count: int, rng: random.Random, start: int) -> List[Dict[str
             intent = (
                 "the documented Failed-to-Authorized flip; the later authorization "
                 "supersedes the failure and no recovery action is required"
+            )
+        elif sub_case == "chain_gap":
+            setup = [
+                _create_step(payment_id, amount, note),
+                _webhook_step(payment_id, "payment.authorized"),
+                _webhook_step(
+                    payment_id, "payment.dispute.created", _chaos(["silent_drop"])
+                ),
+                _fail_step(payment_id, profile),
+            ]
+            intent = (
+                "sequence 2 of 3 (payment.dispute.created) is silently dropped between "
+                "two events that deliver cleanly; the tracer must report the hole via "
+                "missing_sequences rather than treat the visible chain as complete"
+            )
+        elif sub_case == "out_of_order":
+            setup = [
+                _create_step(payment_id, amount, note),
+                _fail_step(
+                    payment_id,
+                    profile,
+                    _chaos(
+                        ["failed_authorized_flip", "out_of_order_webhook"],
+                        flip_after_seconds=30.0,
+                    ),
+                ),
+            ]
+            intent = (
+                "the Failed-to-Authorized flip again, but the later authorization is "
+                "scheduled to arrive before the earlier failure; the resolver must order "
+                "by sequence/occurred_at, not by delivery order, and still land on the "
+                "same AUTHORIZED resolution the in-order flip case does"
             )
         else:  # verify_mismatch_stale_success
             # The failure is delivered; the two events that follow it are not.
