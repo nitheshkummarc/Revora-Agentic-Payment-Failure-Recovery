@@ -68,8 +68,13 @@ INJECTION_PATTERNS: List[Tuple[str, str]] = [
     ("new_instructions", r"new\s+instruction|updated\s+instruction"),
     (
         "action_injection",
-        r"\b(?:approve|authorize|authorise|issue|grant|process)\s+(?:the\s+|a\s+|my\s+)?"
-        r"(?:refund|payment|discount|retry|charge)",
+        r"\b(?:approve|authorize|authorise|issue|grant|process|retry)\s+(?:the\s+|a\s+|my\s+)?"
+        r"(?:refund|payment|discount|retry|charge)\b"
+        # "retry" is also the one money-moving action a customer plausibly asks
+        # for in plain language with no noun at all -- "retry it", "please
+        # retry" -- unlike the other trigger verbs, which read oddly bare.
+        r"|\bretry\s+(?:it|this|that|now)\b"
+        r"|\bplease\s+retry\b",
     ),
     ("override_directive", r"\boverride\b|\bbypass\b|\bignore\s+the\s+polic"),
     ("delimiter_escape_attempt", rf"</?\s*{UNTRUSTED_BLOCK_TAG}\s*>"),
