@@ -727,46 +727,72 @@ def test_circuit_closes_itself_once_the_cooldown_elapses(clock: FakeClock):
     assert client.consecutive_failures == 0
 
 
-def test_concurrent_payment_creation_does_not_corrupt_or_drop_records(
-    clock: FakeClock,
+def test_concurrent_captures_of_the_same_payment_only_one_succeeds(
+    clock: FakeClock, monkeypatch
 ):
-    """FastAPI runs sync route handlers in a threadpool, so concurrent HTTP
-    requests are real concurrent threads sharing one gateway instance. Without
-    the per-call lock, interleaved read-modify-write on self.payments could
-    lose or corrupt a record; with it, every one of N concurrent creations
-    must land intact."""
+    """Real contention, not just concurrent calls: N threads race to capture
+    the SAME payment. capture_payment reads record.state, decides the
+    transition is legal, and only then commits it several calls later inside
+    _transition_payment_truth -- real work happens in that window
+    (WebhookEvent construction, chaos injection, dict lookups). Without the
+    lock serialising the whole call, more than one thread can pass its own
+    outer check before any of them commits the AUTHORIZED->CAPTURED
+    transition, and _deliver() appends a payment.captured history entry
+    unconditionally once a thread reaches it -- regardless of whether the
+    transition it triggers actually applies -- so more than one such entry
+    for a payment that can only be captured once is the real, observable
+    symptom of the race, not an exception.
+
+    Relying on natural GIL-timing luck to hit that window turned out not to
+    reproduce it (verified: even with the lock removed entirely, the
+    unpatched version of this test passed 5/5 runs, because the window is a
+    handful of microseconds and 20 threads mostly just ran it sequentially).
+    A short sleep is injected into the exact window under test to force the
+    interleaving deterministically, rather than hoping for it.
+
+    An earlier version of this test spawned N threads each creating a
+    payment with a *distinct* id -- no shared key at all, so it passed
+    identically with the lock removed and proved nothing. This replaces it."""
+    from app.gateway.mock_gateway import MockPaymentGateway as _Gateway
     import threading
+    import time
 
     gateway = MockPaymentGateway(
         settings=GatewaySettings(webhook_delivery_failure_rate=0.0), clock=clock
     )
-    thread_count = 25
-    errors: List[Exception] = []
+    _create(gateway)
+    gateway.simulate_webhook(
+        SimulateWebhookRequest(entity_id="pay_test_1", event=WebhookEventName.PAYMENT_AUTHORIZED)
+    )
 
-    def _create_one(index: int) -> None:
+    original_transition = _Gateway._transition_payment_truth
+
+    def _slow_transition(self, event):
+        if event.event is WebhookEventName.PAYMENT_CAPTURED:
+            time.sleep(0.01)
+        return original_transition(self, event)
+
+    monkeypatch.setattr(_Gateway, "_transition_payment_truth", _slow_transition)
+
+    thread_count = 8
+
+    def _try_capture() -> None:
         try:
-            gateway.create_payment(
-                CreatePaymentRequest(
-                    payment_id=f"pay_concurrent_{index}",
-                    amount=1000 + index,
-                    currency="INR",
-                )
-            )
-        except Exception as exc:  # pragma: no cover - failure path under test
-            errors.append(exc)
+            gateway.capture_payment(CapturePaymentRequest(payment_id="pay_test_1"))
+        except Exception:  # pragma: no cover - either outcome is fine here
+            pass
 
-    threads = [threading.Thread(target=_create_one, args=(i,)) for i in range(thread_count)]
+    threads = [threading.Thread(target=_try_capture) for _ in range(thread_count)]
     for t in threads:
         t.start()
     for t in threads:
         t.join(timeout=5)
 
-    assert errors == []
-    assert len(gateway.payments) == thread_count
-    for index in range(thread_count):
-        record = gateway.payments[f"pay_concurrent_{index}"]
-        assert record.amount == 1000 + index
-        assert len(gateway.event_history[f"pay_concurrent_{index}"]) >= 0
+    captured_events = [
+        e for e in gateway.event_history["pay_test_1"] if e.event is WebhookEventName.PAYMENT_CAPTURED
+    ]
+    assert len(captured_events) == 1
+    assert gateway.payments["pay_test_1"].state is PaymentState.CAPTURED
 
 
 def test_an_open_circuit_drops_later_webhooks_without_touching_gateway_truth(
