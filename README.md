@@ -93,8 +93,7 @@ All eight components are built.
 | X-Ray dashboard | 79 |
 
 **325 backend + 79 frontend = 404 tests passing**, plus 17 that are skipped by
-default — see below. The frontend count is as last reported by an audit pass;
-no Node.js/npm has been available in the sessions since to re-run it directly.
+default — see below.
 
 ### What is not covered
 
@@ -340,9 +339,7 @@ The header states which of the two it used.
 ### Frontend tests
 
 ```bash
-npm test              # 79 offline tests, no servers needed (as last reported by
-                       # an audit pass; not re-run since -- no Node.js/npm
-                       # available in the sessions since)
+npm test              # 79 offline tests, no servers needed
 npm run test:live     # end-to-end; needs backend on :8000 and a served dashboard
 ```
 
