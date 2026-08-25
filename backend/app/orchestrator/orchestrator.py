@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
@@ -317,7 +318,7 @@ class AgentOrchestrator:
             needs_human_review=review,
         )
 
-        BATCH_RESULTS_STORE[batch_run_id] = results
+        _store_batch_results(batch_run_id, results)
         self._persist(results)
         log_event(
             logger,
@@ -809,7 +810,19 @@ class AgentOrchestrator:
 # Results are held in memory for the life of the process and written to disk on
 # every run, so a restart does not lose the most recent batch.
 # --------------------------------------------------------------------------
-BATCH_RESULTS_STORE: Dict[str, BatchResults] = {}
+# Local tuning choice, not a documented figure: enough runs for a demo session
+# to look back over, capped so a long-lived process doesn't grow this without
+# bound. Oldest run evicted first once the cap is exceeded.
+MAX_STORED_BATCH_RESULTS = 20
+
+BATCH_RESULTS_STORE: "OrderedDict[str, BatchResults]" = OrderedDict()
+
+
+def _store_batch_results(batch_run_id: str, results: BatchResults) -> None:
+    BATCH_RESULTS_STORE[batch_run_id] = results
+    BATCH_RESULTS_STORE.move_to_end(batch_run_id)
+    while len(BATCH_RESULTS_STORE) > MAX_STORED_BATCH_RESULTS:
+        BATCH_RESULTS_STORE.popitem(last=False)
 
 router = APIRouter(tags=["orchestrator"])
 

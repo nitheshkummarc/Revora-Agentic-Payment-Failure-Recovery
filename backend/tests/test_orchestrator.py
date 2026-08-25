@@ -35,10 +35,14 @@ from app.intelligence.schemas import LLMRecommendation, RecommendedAction
 from app.main import app
 from app.orchestrator.orchestrator import (
     BATCH_RESULTS_STORE,
+    MAX_STORED_BATCH_RESULTS,
     AgentOrchestrator,
     BatchEvent,
+    BatchResults,
+    BatchSummary,
     EventOutcome,
     PipelineStage,
+    _store_batch_results,
 )
 from app.state_machine.states import CanonicalState
 
@@ -492,6 +496,37 @@ def test_results_are_readable_over_http(gateway, clock, tmp_path):
 
     assert client.get("/api/batch-results/not-a-run").status_code == 404
     BATCH_RESULTS_STORE.pop(results.batch_run_id, None)
+
+
+def _dummy_results(batch_run_id: str) -> BatchResults:
+    return BatchResults(
+        batch_run_id=batch_run_id,
+        summary=BatchSummary(
+            batch_run_id=batch_run_id,
+            started_at=START,
+            finished_at=START,
+            total_events=0,
+        ),
+    )
+
+
+def test_batch_results_store_evicts_the_oldest_run_past_the_cap():
+    """Nothing else evicts old runs, so an unbounded dict would grow for the
+    life of the process. Direct unit test of the store rather than the full
+    pipeline: only insertion order matters here."""
+    BATCH_RESULTS_STORE.clear()
+    run_ids = [f"run_{i}" for i in range(MAX_STORED_BATCH_RESULTS + 5)]
+    for run_id in run_ids:
+        _store_batch_results(run_id, _dummy_results(run_id))
+
+    assert len(BATCH_RESULTS_STORE) == MAX_STORED_BATCH_RESULTS
+    # The 5 oldest are gone; the most recent MAX_STORED_BATCH_RESULTS remain.
+    evicted, kept = run_ids[:5], run_ids[5:]
+    for run_id in evicted:
+        assert run_id not in BATCH_RESULTS_STORE
+    for run_id in kept:
+        assert run_id in BATCH_RESULTS_STORE
+    BATCH_RESULTS_STORE.clear()
 
 
 # --------------------------------------------------------------------------
