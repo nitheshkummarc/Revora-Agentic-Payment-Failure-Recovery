@@ -203,6 +203,11 @@ def test_generator_thresholds_still_agree_with_the_policy_engine(generator):
     assert generator.AFA_REQUIRED_ABOVE_PAISE == R.AFA_REQUIRED_ABOVE_PAISE
     assert generator.MAX_RETRIES == R.MAX_RETRIES
     assert generator.PRE_DEBIT_NOTICE_HOURS == R.PRE_DEBIT_NOTICE_HOURS
+    # The generator doesn't mirror this one as an exact figure -- it picks an
+    # amount it only needs to sit safely above the threshold. If the engine's
+    # threshold ever rose to meet or pass it, the row would stop violating
+    # anything, so the relationship itself is what has to hold.
+    assert generator.SIP_INSURANCE_VIOLATION_AMOUNT_PAISE > R.AFA_REQUIRED_ABOVE_SIP_INSURANCE_PAISE
 
 
 # --------------------------------------------------------------------------
