@@ -30,8 +30,10 @@ a business decision owned by the Orchestrator/Policy layer, not this module.
 
 from __future__ import annotations
 
+import functools
 import itertools
 import random
+import threading
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -204,6 +206,25 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _locked(method):
+    """Serialise one public method call at a time on the same gateway
+    instance.
+
+    FastAPI runs sync route handlers in a threadpool, so concurrent HTTP
+    requests are real concurrent threads sharing one gateway singleton
+    (mock_gateway.py's `_gateway`) and one RNG stream. RLock, not Lock:
+    capture_payment and fail_payment call get_payment_status internally, so a
+    plain Lock would deadlock the same thread against itself.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class MockPaymentGateway:
     """In-memory payment gateway with chaos injection."""
 
@@ -214,6 +235,7 @@ class MockPaymentGateway:
     ) -> None:
         self.settings = settings or GATEWAY_SETTINGS
         self._clock = clock or _utcnow
+        self._lock = threading.RLock()
         self.payments: Dict[str, PaymentRecord] = {}
         self.subscriptions: Dict[str, SubscriptionRecord] = {}
         self.event_history: Dict[str, List[WebhookEvent]] = {}
@@ -293,6 +315,7 @@ class MockPaymentGateway:
         return entry
 
     # -- public API ------------------------------------------------------
+    @_locked
     def create_payment(self, request: CreatePaymentRequest) -> PaymentRecord:
         self.settle()
         payment_id = request.payment_id or self._new_payment_id()
@@ -326,6 +349,7 @@ class MockPaymentGateway:
         )
         return record
 
+    @_locked
     def capture_payment(self, request: CapturePaymentRequest) -> PaymentStatusResponse:
         self.settle()
         record = self._require_payment(request.payment_id)
@@ -349,6 +373,7 @@ class MockPaymentGateway:
         )
         return self.get_payment_status(record.payment_id)
 
+    @_locked
     def fail_payment(self, request: FailPaymentRequest) -> PaymentStatusResponse:
         self.settle()
         record = self._require_payment(request.payment_id)
@@ -374,6 +399,7 @@ class MockPaymentGateway:
         )
         return self.get_payment_status(record.payment_id)
 
+    @_locked
     def simulate_webhook(self, request: SimulateWebhookRequest) -> SimulateWebhookResponse:
         self.settle()
         event_name = request.event
@@ -416,6 +442,7 @@ class MockPaymentGateway:
             webhook_derived_state=derived,
         )
 
+    @_locked
     def get_payment_status(self, payment_id: str) -> PaymentStatusResponse:
         """Status query. Hits the gateway's own truth, so it is unaffected by
         webhook chaos -- this is the disambiguation tool for later modules."""
@@ -430,6 +457,7 @@ class MockPaymentGateway:
             ),
         )
 
+    @_locked
     def get_subscription_status(self, subscription_id: str) -> SubscriptionStatusResponse:
         self.settle()
         sub = self.subscriptions.get(subscription_id)
@@ -530,6 +558,7 @@ class MockPaymentGateway:
         sub = self.subscriptions.get(entity_id)
         return sub.state.value if sub else SubscriptionState.CREATED.value
 
+    @_locked
     def settle(self, now: Optional[datetime] = None) -> List[WebhookEvent]:
         """Deliver every scheduled webhook whose arrival time has passed.
 
@@ -792,6 +821,7 @@ class MockPaymentGateway:
         self.transition_log.setdefault(subscription_id, [])
         return sub
 
+    @_locked
     def reset(self) -> None:
         """Wipe all state. Used between tests and demo runs."""
         self.__init__(self.settings, self._clock)  # noqa: PLC2801

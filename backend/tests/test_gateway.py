@@ -713,6 +713,48 @@ def test_circuit_closes_itself_once_the_cooldown_elapses(clock: FakeClock):
     assert client.consecutive_failures == 0
 
 
+def test_concurrent_payment_creation_does_not_corrupt_or_drop_records(
+    clock: FakeClock,
+):
+    """FastAPI runs sync route handlers in a threadpool, so concurrent HTTP
+    requests are real concurrent threads sharing one gateway instance. Without
+    the per-call lock, interleaved read-modify-write on self.payments could
+    lose or corrupt a record; with it, every one of N concurrent creations
+    must land intact."""
+    import threading
+
+    gateway = MockPaymentGateway(
+        settings=GatewaySettings(webhook_delivery_failure_rate=0.0), clock=clock
+    )
+    thread_count = 25
+    errors: List[Exception] = []
+
+    def _create_one(index: int) -> None:
+        try:
+            gateway.create_payment(
+                CreatePaymentRequest(
+                    payment_id=f"pay_concurrent_{index}",
+                    amount=1000 + index,
+                    currency="INR",
+                )
+            )
+        except Exception as exc:  # pragma: no cover - failure path under test
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_create_one, args=(i,)) for i in range(thread_count)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert errors == []
+    assert len(gateway.payments) == thread_count
+    for index in range(thread_count):
+        record = gateway.payments[f"pay_concurrent_{index}"]
+        assert record.amount == 1000 + index
+        assert len(gateway.event_history[f"pay_concurrent_{index}"]) >= 0
+
+
 def test_an_open_circuit_drops_later_webhooks_without_touching_gateway_truth(
     clock: FakeClock,
 ):
