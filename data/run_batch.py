@@ -18,12 +18,13 @@ from the seed instant to the reference instant, and not at all during the batch
 itself, so every payment is observed at the same moment. That is what makes a
 dropped webhook read as silence and a delayed one read as still in flight.
 
-Model. Recommendations come from the offline stub client unless a live client
-is supplied, so a run needs no API key and returns the same recommendation for
-every event. Everything this run measures is therefore a property of the
-deterministic pipeline -- resolution, tracing, policy and verification -- and
-not of any model's judgement. Figures from a stubbed run must be described that
-way.
+Model. `_select_llm_client()` uses `AnthropicLLMClient` when `ANTHROPIC_API_KEY`
+is set in the environment, and `StubLLMClient` otherwise -- the stub is a
+fallback for a missing key, not the default. A stubbed run needs no key and
+returns the same recommendation for every event, so everything it measures is a
+property of the deterministic pipeline -- resolution, tracing, policy and
+verification -- and not of any model's judgement. Figures from a stubbed run
+must be described that way; check the printed "Model:" line to know which ran.
 
 Usage:
     python data/run_batch.py [--dataset PATH] [--failure-rate 0.05]
@@ -33,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -50,7 +52,12 @@ from app.gateway.schemas import (  # noqa: E402
     FailPaymentRequest,
     SimulateWebhookRequest,
 )
-from app.intelligence.llm_client import IntelligenceLayer, StubLLMClient  # noqa: E402
+from app.intelligence.llm_client import (  # noqa: E402
+    AnthropicLLMClient,
+    IntelligenceLayer,
+    LLMClient,
+    StubLLMClient,
+)
 from app.orchestrator.orchestrator import (  # noqa: E402
     AgentOrchestrator,
     BatchEvent,
@@ -123,6 +130,20 @@ def apply_step(gateway: MockPaymentGateway, step: Dict[str, Any]) -> None:
         raise ValueError(f"unknown gateway seed op: {op!r}")
 
 
+def _select_llm_client() -> LLMClient:
+    """AnthropicLLMClient when a key is present; StubLLMClient otherwise.
+
+    The stub is a fallback for a missing key, not the default -- a run with a
+    key available must exercise the real model, not silently fall back to
+    canned output.
+    """
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        print("Model: AnthropicLLMClient (ANTHROPIC_API_KEY present)")
+        return AnthropicLLMClient()
+    print("Model: StubLLMClient (no ANTHROPIC_API_KEY; offline deterministic client)")
+    return StubLLMClient()
+
+
 def seed_and_run(dataset: Dict[str, Any], failure_rate: float) -> BatchResults:
     reference = datetime.fromisoformat(dataset["batch_reference_time"])
     seed_at = reference - timedelta(seconds=dataset["seed_offset_seconds"])
@@ -153,7 +174,7 @@ def seed_and_run(dataset: Dict[str, Any], failure_rate: float) -> BatchResults:
 
     orchestrator = AgentOrchestrator(
         gateway=gateway,
-        intelligence=IntelligenceLayer(llm_client=StubLLMClient(), clock=clock),
+        intelligence=IntelligenceLayer(llm_client=_select_llm_client(), clock=clock),
         clock=clock,
         results_path=RESULTS_PATH,
     )
