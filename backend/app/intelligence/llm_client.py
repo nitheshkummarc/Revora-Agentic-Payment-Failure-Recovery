@@ -26,6 +26,7 @@ import os
 from datetime import datetime, timezone
 from typing import Callable, List, Optional, Protocol
 
+from app.core.config import INTELLIGENCE_SETTINGS
 from app.core.logging import get_logger, log_event
 from app.intelligence.prompts import SYSTEM_PROMPT, build_user_content
 from app.intelligence.sanitizer import sanitize_customer_note
@@ -67,6 +68,8 @@ class AnthropicLLMClient:
         max_tokens: int = DEFAULT_MAX_TOKENS,
         api_key: Optional[str] = None,
         client: Optional[object] = None,
+        timeout: Optional[float] = None,
+        max_retries: Optional[int] = None,
     ) -> None:
         self.model = model
         self.max_tokens = max_tokens
@@ -81,7 +84,15 @@ class AnthropicLLMClient:
                 "different LLMClient implementation"
             ) from exc
         key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        self._client = anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic()
+        client_kwargs = {
+            "timeout": timeout if timeout is not None else INTELLIGENCE_SETTINGS.request_timeout_seconds,
+            "max_retries": max_retries if max_retries is not None else INTELLIGENCE_SETTINGS.max_retries,
+        }
+        self._client = (
+            anthropic.Anthropic(api_key=key, **client_kwargs)
+            if key
+            else anthropic.Anthropic(**client_kwargs)
+        )
 
     def recommend(self, system_prompt: str, user_content: str) -> LLMRecommendation:
         # A brand-new single-message request. Nothing from any previous event is

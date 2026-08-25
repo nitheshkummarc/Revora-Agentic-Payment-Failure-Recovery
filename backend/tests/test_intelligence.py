@@ -597,3 +597,67 @@ def test_the_request_contract_is_otherwise_unchanged():
     assert kwargs["max_tokens"] == client.max_tokens
     assert kwargs["output_format"] is LLMRecommendation
     assert isinstance(result, LLMRecommendation)
+
+
+# --------------------------------------------------------------------------
+# Timeout / retry configuration
+# --------------------------------------------------------------------------
+def test_client_construction_sets_an_explicit_timeout_and_retry_count(monkeypatch):
+    """A 500-row batch calls the model sequentially, so a hung response has to
+    fail closed within a bounded time rather than block on the SDK's own
+    default -- the timeout and retry count must be passed explicitly, not
+    left implicit."""
+    import anthropic
+
+    from app.core.config import INTELLIGENCE_SETTINGS
+
+    captured = {}
+
+    class RecordingAnthropic:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(anthropic, "Anthropic", RecordingAnthropic)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-not-real")
+
+    AnthropicLLMClient()
+
+    assert captured["timeout"] == INTELLIGENCE_SETTINGS.request_timeout_seconds
+    assert captured["max_retries"] == INTELLIGENCE_SETTINGS.max_retries
+
+
+def test_client_construction_honours_explicit_overrides(monkeypatch):
+    import anthropic
+
+    captured = {}
+
+    class RecordingAnthropic:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(anthropic, "Anthropic", RecordingAnthropic)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-not-real")
+
+    AnthropicLLMClient(timeout=5.0, max_retries=0)
+
+    assert captured["timeout"] == 5.0
+    assert captured["max_retries"] == 0
+
+
+def test_llm_timeout_escalates_without_blocking():
+    """A network timeout must fail closed like any other provider error --
+    not stall the batch waiting for a response that will never arrive."""
+
+    class TimingOutClient:
+        model = "slow"
+
+        def recommend(self, system_prompt, user_content):
+            raise TimeoutError("the model did not respond within the configured timeout")
+
+    layer = IntelligenceLayer(llm_client=TimingOutClient())
+    decision = layer.recommend(make_input())
+
+    assert decision.recommended_action is RecommendedAction.ESCALATE_HUMAN
+    assert decision.confidence == 0.0
+    assert decision.llm_called is False
+    assert "llm_call_failed" in decision.short_circuit_reason

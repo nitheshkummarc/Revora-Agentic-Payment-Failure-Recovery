@@ -48,3 +48,18 @@ class GatewaySettings(BaseModel):
 
 
 GATEWAY_SETTINGS = GatewaySettings()
+
+
+class IntelligenceSettings(BaseModel):
+    """Settings for the Anthropic model client."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Both are local tuning choices with no external basis. A 500-row batch
+    # calls the model sequentially, so a hung or slow response has to fail
+    # closed within a bounded time rather than stall the whole run.
+    request_timeout_seconds: float = Field(default=30.0, gt=0.0)
+    max_retries: int = Field(default=2, ge=0)
+
+
+INTELLIGENCE_SETTINGS = IntelligenceSettings()
