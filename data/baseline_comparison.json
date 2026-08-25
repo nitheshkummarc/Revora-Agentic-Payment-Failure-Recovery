@@ -5,10 +5,10 @@
     "Revora": {
       "amounts_paise": {
         "legitimately_recovered_paise": 195695000,
-        "already_successful_preserved_paise": 15269200,
+        "already_successful_preserved_paise": 16884200,
         "incorrectly_put_at_risk_paise": 0,
         "safely_blocked_paise": 100289200,
-        "escalated_paise": 28257100
+        "escalated_paise": 26642100
       },
       "counts": {
         "legitimately_recovered_paise": 300,
@@ -32,8 +32,8 @@
     },
     "naive always-retry": {
       "amounts_paise": {
-        "legitimately_recovered_paise": 223952100,
-        "already_successful_preserved_paise": 15269200,
+        "legitimately_recovered_paise": 222337100,
+        "already_successful_preserved_paise": 16884200,
         "incorrectly_put_at_risk_paise": 100289200,
         "safely_blocked_paise": 0,
         "escalated_paise": 0

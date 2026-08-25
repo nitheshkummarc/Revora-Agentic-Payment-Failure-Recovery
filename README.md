@@ -3,9 +3,8 @@
 Payment-failure root-cause analysis and recovery decisioning, with a
 deterministic diagnosis layer between the evidence and the model.
 
-> Most recovery agents decide *whether* to retry a failed payment. Revora
-> traces the causal chain of *why* a batch of payments degraded, then decides —
-> and it fails closed on RBI mandate rules, not just retry limits.
+> Revora traces the causal chain of *why* a batch of payments degraded, then
+> decides — and it fails closed on RBI mandate rules, not just retry limits.
 
 ## The idea
 
@@ -61,14 +60,16 @@ Two boundaries are enforced structurally rather than by convention:
 
 - **Resolution works from evidence, not truth.** The resolver reads delivered
   webhooks and timestamps. It has no access to the gateway's internal state, so
-  a silently dropped webhook reads as silence — which, past a 5-minute
-  threshold, means "check the status", not "assume it failed".
+  a silently dropped webhook reads as silence — which, past this project's
+  configured evidence threshold (`SILENCE_THRESHOLD_SECONDS = 300`, a Revora
+  design choice rather than a documented Razorpay figure), means "check the
+  status", not "assume it failed".
 - **A gap in the event chain is reported, never smoothed over.** Missing
   telemetry sets `ambiguous: true` rather than returning a shorter chain that
   looks complete.
 - **Root causes are quoted, not paraphrased.** The tracer emits the literal
   `source`, `step` and `reason` from the event's own error object, so any cause
-  can be grepped back to the event that produced it.
+  can be traced back to the event that produced it.
 - **An ambiguous trace never reaches the model.** It short-circuits to a status
   check, so the model is never asked to guess in place of missing data.
 - **Compliance fails closed.** A missing pre-debit notice, mandate ceiling or
@@ -81,33 +82,37 @@ All eight components are built.
 
 | Component | Tests |
 |---|---|
-| Mock payment gateway + fault injection | 26 |
+| Mock payment gateway + fault injection | 37 |
 | State resolver | 28 |
 | Failure propagation tracer | 22 |
-| Recommendation layer | 43 |
-| Policy engine | 64 |
-| Orchestrator + verify | 17 |
+| Recommendation layer | 74 |
+| Policy engine | 70 |
+| Orchestrator + verify | 29 |
 | API / CORS scoping | 9 |
 | Synthetic dataset generator | 53 |
-| X-Ray dashboard | 64 |
+| X-Ray dashboard | 79 |
 
-**262 backend + 64 frontend = 326 tests passing**, plus 16 that are skipped by
-default — see below.
+**325 backend + 79 frontend = 404 tests passing**, plus 17 that are skipped by
+default — see below. The frontend count is as last reported by an audit pass;
+no Node.js/npm has been available in the sessions since to re-run it directly.
 
 ### What is not covered
 
-A further 16 tests exercise prompt injection against the **real** model rather
+A further 17 tests exercise prompt injection against the **real** model rather
 than the offline stub. They skip unless `ANTHROPIC_API_KEY` is set, and they
-skip loudly: a green suite without a key is not evidence they passed.
+skip loudly: a green suite without a key is not evidence they passed. No key
+has been available in any session this project has been built or audited in,
+so these have never run.
 
 ```bash
 ANTHROPIC_API_KEY=... python -m pytest backend/tests/test_intelligence_live_api.py -v
 ```
 
 Until that runs, every claim about injection resistance rests on the
-deterministic guard — which is tested against a stub rigged to comply with each
-injection, so it is a real guarantee. It is not the same claim as "the model
-resists injection", and the two are worth keeping apart.
+deterministic guard, which is tested against a stub rigged to comply with
+every injection case. That is a real property of the guard itself. It is not
+the same claim as "the model resists injection" — that claim is currently
+untested, not merely unproven, and the two must not be conflated.
 
 ## Results
 
@@ -116,11 +121,11 @@ byte-identical per-event outcomes.
 
 | Outcome | Count | Value |
 |---|---|---|
-| Settled via retry against the mock gateway | 324 | ₹20,40,126 |
+| Settled via retry against the mock gateway | 316 | ₹20,15,634 |
 | Blocked by policy | 63 | ₹10,02,892 |
-| Escalated | 79 | ₹2,82,571 |
+| Escalated | 79 | ₹2,66,421 |
 | Needs review | 4 | ₹1,796 |
-| No action needed | 30 | ₹67,720 |
+| No action needed | 38 | ₹1,08,362 |
 | **Total** | **500** | **₹33,95,105** |
 
 All 10 policy rules fired. 31 rows carried a prompt-injection attempt; all 31
@@ -155,10 +160,15 @@ cannot drift from the run it describes.
 | Figure | This run | What it means |
 |---|---|---|
 | Override rate | **7.9%** (31 of 392) | The deterministic guard replaced the model's answer on 31 of the answers it gave — every one `RETRY_SOFT` → `ESCALATE_HUMAN` |
-| Ambiguity short-circuit rate | **15.6%** (78 of 500) | Evidence too thin to ask; answered without calling the model at all |
-| Never-consulted rate | **6.0%** (30 of 500) | The payment had not failed, so there was nothing to recommend |
+| Ambiguity short-circuit rate | **14.0%** (70 of 500) | Evidence too thin to ask; answered without calling the model at all |
+| Never-consulted rate | **7.6%** (38 of 500) | The payment had not failed, so there was nothing to recommend |
 | Injection attempts | **31 detected, 0 moved money** | |
 | Reconciliation | **3 of 3 pass** | Recomputed from the events on screen, not read from a stored result |
+
+**Override rate = overrides ÷ model consultations, not ÷ all 500 rows.** 392 is
+the denominator because that is how many rows actually reached the model — the
+other 108 were answered without consulting it at all (see the next two rows),
+so they carry no override risk to count.
 
 So **21.6% of rows never reached the model**, and of those that did, **one in
 twelve had its answer overruled**. Both are properties of the pipeline around
@@ -183,17 +193,17 @@ one.
 
 | Category | Revora | Naive always-retry |
 |---|---|---|
-| Legitimately recovered | ₹19,56,950 (300) | ₹22,39,521 (379) |
-| Already successful, preserved | ₹1,52,692 (58) | ₹1,52,692 (58) |
+| Legitimately recovered | ₹19,56,950 (300) | ₹22,23,371 (379) |
+| Already successful, preserved | ₹1,68,842 (58) | ₹1,68,842 (58) |
 | Incorrectly put at risk | **₹0 (0)** | ₹10,02,892 (63) |
 | Safely blocked | ₹10,02,892 (63) | ₹0 (0) |
-| Escalated | ₹2,82,571 (79) | ₹0 (0) |
+| Escalated | ₹2,66,421 (79) | ₹0 (0) |
 
 | Counter | Revora | Naive |
 |---|---|---|
 | Unsafe retries attempted | 0 | 63 |
 | Duplicate-payment risk | 4 | 58 |
-| — of which the gateway actually moved money | **0** | **54 (₹1,50,896)** |
+| — of which the gateway actually moved money | **0** | **54 (₹1,67,046)** |
 | Correct escalations | 79 | 0 |
 | Verification failures caught | 4 | 0 |
 
@@ -207,7 +217,7 @@ of them: the refused capture left every one still `CAPTURED`, and Verify held
 all 4 for review.
 
 For the same reason, read `already_successful_preserved_paise` carefully. It is
-assigned by prior state, so both policies show an identical ₹1,52,692 — but the
+assigned by prior state, so both policies show an identical ₹1,68,842 — but the
 naive policy did not preserve that value, it captured most of it. The category
 records what was true before either policy acted; the duplicate-payment counter
 above is what records what they then did about it.
@@ -235,38 +245,35 @@ python data/run_baseline.py
 
 ### Benchmark scope
 
-Three things are deliberately outside this benchmark. International payment
+Two things are deliberately outside this benchmark. International payment
 failures are not modelled: the dataset is INR-only and every compliance rule it
 exercises is RBI's, so a cross-border failure has no represented error vocabulary
 or rule set. Subscription-halt-specific flows are not exercised at the dataset
-level: `SubscriptionState.HALTED` and `subscription.halted` are implemented and
-unit-tested in the gateway, but the dataset creates no subscriptions, so retry
-exhaustion is governed here by the policy engine's `MAX_RETRIES_EXCEEDED` rather
-than by a subscription halting. Out-of-order webhook delivery is likewise absent
-from the dataset: the resolver's ordering and the gateway's out-of-order chaos
-mode are both unit-tested, but no generated row emits an out-of-order sequence,
-so the ordering guarantee is proven by unit tests rather than by this batch. In
-each case the mechanism is tested; what is missing is dataset-level coverage, and
-the distinction is worth keeping precise.
+level either: `SubscriptionState.HALTED` and `subscription.halted` are
+implemented and unit-tested in the gateway, but the dataset creates no
+subscriptions, so retry exhaustion is governed here by the policy engine's
+`MAX_RETRIES_EXCEEDED` rather than by a subscription halting.
 
-The same distinction applies to one rule inside the tracer. A *partial* gap in
-the event chain — some events delivered, one missing from the middle — sets
-`ambiguous: true` through the structural gap rule, and that is unit-tested. No
-generated row produces one: every ambiguous row in the batch is total silence
-rather than a hole in a chain, so the gap rule is proven by unit tests and not by
-this dataset.
+Two mechanisms that used to be in this list are not any more. Out-of-order
+webhook delivery and a partial gap in the event chain were previously proven
+only by unit tests, with nothing in the generated dataset exercising either.
+Both are now dataset-level scenarios in the `ambiguous` bucket (`chain_gap`,
+`out_of_order`): a silently dropped intermediate webhook leaves
+`missing_sequences: [2]` for the tracer's structural gap rule to report, and a
+Failed-to-Authorized flip with its authorization scheduled to *arrive* before
+the failure confirms the resolver orders by `(occurred_at, sequence)` rather
+than by delivery order. Both were verified against the real 500-row batch, not
+just asserted: see `data/generate_synthetic_dataset.py`'s `build_ambiguous`.
 
-**Known untested paths in the gateway.** Four failure paths are implemented and
-reachable but have no test, and are listed here as boundaries rather than left
-silent. The webhook delivery client's *exhausted retry budget* branch never runs
-under test, because at the default failure rate no delivery ever uses its whole
-budget. Neither *illegal-transition refusal* is covered — the one guarding
-gateway truth, nor the one guarding the merchant-visible derived state; the
-ordering guarantee they back up is tested, but through sequence handling rather
-than through these checks. Nor is the refusal to *fail a payment from a terminal
-state*. All four are safety logic rather than convenience code, which is why they
-are named individually. The circuit breaker's open-state guard was in this list
-and now has coverage.
+**Known untested paths in the gateway.** All four paths previously listed here
+now have direct tests, plus one more the naive-baseline comparison depends on
+that was not on the original list: capturing an already-`CAPTURED` payment.
+None of the five needed a behaviour change -- every one was already correct,
+just previously unexercised. Named here rather than silently dropped from the
+README, since "this list used to be longer" is worth being able to check:
+exhausted webhook retry budget, illegal-transition refusal guarding gateway
+truth, the same guarding the merchant-visible derived state, refusing to fail a
+payment from a terminal state, and refusing to capture one twice.
 
 One caveat on the four `needs_review` rows. They depend on their failure webhook
 being delivered while the two that follow are dropped. At the 5% default delivery
@@ -281,7 +288,7 @@ and escalating instead.
 
 ```bash
 pip install -r backend/requirements.txt
-python -m pytest -q                                # 262 passed, 16 skipped
+python -m pytest -q                                # 325 passed, 17 skipped
 uvicorn app.main:app --reload --app-dir backend    # http://localhost:8000
 ```
 
@@ -333,7 +340,9 @@ The header states which of the two it used.
 ### Frontend tests
 
 ```bash
-npm test              # 64 offline tests, no servers needed
+npm test              # 79 offline tests, no servers needed (as last reported by
+                       # an audit pass; not re-run since -- no Node.js/npm
+                       # available in the sessions since)
 npm run test:live     # end-to-end; needs backend on :8000 and a served dashboard
 ```
 
@@ -346,6 +355,7 @@ backend/app/tracer/          root cause, causal chain, confidence, ambiguity
 backend/app/intelligence/    prompt construction, sanitiser, model client
 backend/app/policy/          the rules, and the engine that applies them in order
 backend/app/orchestrator/    the loop, the batch runner, the results endpoint
+backend/app/orchestrator/schemas.py  the API contract, kept apart from the loop that fills it in
 data/generate_synthetic_dataset.py   standalone; imports nothing from backend/
 data/run_batch.py                    replays the dataset through the orchestrator
 frontend/src/                react dashboard, read-only
@@ -357,6 +367,8 @@ frontend/src/                react dashboard, read-only
 |---|---|---|
 | `ANTHROPIC_API_KEY` | unset | Enables live model calls. Without it the recommendation layer uses a deterministic stub and every other layer is unaffected. |
 | `REVORA_CORS_ORIGINS` | the four localhost dev/preview origins | Comma-separated origins allowed to read the API. Scoped rather than `*`, since nothing here needs to be readable by any page on the internet. |
+| `REVORA_DISABLE_LLM` | off | Operational kill switch: forces the same fail-safe escalation as a missing client, without touching how the layer is wired. Recognises `""`/`0`/`false`/`no`/`off` (case-insensitive) as off; anything else is on. |
+| `REVORA_DISABLED_RULES` | unset | Comma-separated `RuleId` names to skip in the policy engine's value-rule checks, for turning off a threshold fast during a live demo. Cannot reach the opt-out or missing-RBI-field gates -- they aren't in the disablable list. An unrecognised name is logged separately rather than silently accepted. |
 
 ## Scope
 
