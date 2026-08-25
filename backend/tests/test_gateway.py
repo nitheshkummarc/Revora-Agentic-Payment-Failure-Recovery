@@ -845,3 +845,109 @@ def test_illegal_capture_is_rejected(client: TestClient):
     client.post("/payments/create", json={"payment_id": "pay_http_3", "amount": 50000})
     response = client.post("/payments/capture", json={"payment_id": "pay_http_3"})
     assert response.status_code == 409
+
+
+# --------------------------------------------------------------------------
+# Four safety paths named as untested in README.md's "Known untested paths
+# in the gateway" -- implemented and reachable, but nothing exercised them.
+# --------------------------------------------------------------------------
+def test_delivery_returns_false_when_the_retry_budget_is_exhausted_without_tripping_the_circuit(
+    clock: FakeClock,
+):
+    """The circuit breaker and the exhausted-retry-budget branch are two
+    different failure modes with two different observable outcomes:
+    CircuitOpenError vs a plain `return False`. At the 5% default the
+    breaker almost always trips first (threshold 5 < typical max_attempts
+    run), so this branch never ran under any existing test. Reached here by
+    setting the threshold above the number of attempts a single delivery can
+    make, so every attempt fails and the loop simply runs out."""
+    settings = GatewaySettings(
+        webhook_delivery_failure_rate=1.0,
+        delivery_max_attempts=2,
+        circuit_breaker_threshold=5,
+    )
+    client_ = WebhookDeliveryClient(settings, clock, ScriptedRandom([0.0, 0.0]))
+
+    result = client_.deliver(_dummy_event())
+
+    assert result is False
+    assert client_.circuit_open is False
+    assert len(client_.delivery_log) == 2
+    assert all(not entry.succeeded for entry in client_.delivery_log)
+
+
+def test_illegal_truth_transition_is_refused_and_logged(clock: FakeClock, gateway: MockPaymentGateway):
+    """capture_payment/fail_payment pre-check legality and raise before ever
+    reaching the gateway-truth transition -- test_illegal_capture_is_rejected
+    covers that outer guard. simulate_webhook has no equivalent pre-check, so
+    an event implying an illegal transition reaches _transition_payment_truth
+    directly, where the inner guard has to refuse it on its own rather than
+    relying on a caller having already checked."""
+    _create(gateway)  # state: CREATED
+
+    # PAYMENT_CAPTURED is only legal from AUTHORIZED or PENDING_WEBHOOK.
+    gateway.simulate_webhook(
+        SimulateWebhookRequest(entity_id="pay_test_1", event=WebhookEventName.PAYMENT_CAPTURED)
+    )
+    status = gateway.get_payment_status("pay_test_1")
+
+    assert status.payment.state is PaymentState.CREATED  # unchanged, not corrupted
+    refused = [
+        t for t in status.transition_log if t.reason == "illegal_transition_CREATED_to_CAPTURED"
+    ]
+    assert len(refused) == 1
+    assert refused[0].applied is False
+
+
+def test_illegal_derived_transition_is_refused_and_logged(clock: FakeClock, gateway: MockPaymentGateway):
+    """The derived (merchant-visible) state has its own legality guard,
+    separate from truth's, because the two can diverge under chaos: truth
+    updates the instant an event happens, but the derived state only updates
+    on delivery. A silently dropped AUTHORIZED webhook leaves derived stuck
+    at CREATED while truth moves on to AUTHORIZED then CAPTURED -- so the
+    later, cleanly-delivered CAPTURED webhook is legal for truth but illegal
+    for a derived state that never left CREATED."""
+    _create(gateway)
+    gateway.simulate_webhook(
+        SimulateWebhookRequest(
+            entity_id="pay_test_1",
+            event=WebhookEventName.PAYMENT_AUTHORIZED,
+            chaos=ChaosConfig(modes=[ChaosMode.SILENT_DROP]),
+        )
+    )
+    pre = gateway.get_payment_status("pay_test_1")
+    assert pre.payment.state is PaymentState.AUTHORIZED  # truth moved on
+    assert pre.payment.webhook_derived_state is PaymentState.CREATED  # derived did not
+
+    gateway.simulate_webhook(
+        SimulateWebhookRequest(entity_id="pay_test_1", event=WebhookEventName.PAYMENT_CAPTURED)
+    )
+    status = gateway.get_payment_status("pay_test_1")
+
+    assert status.payment.state is PaymentState.CAPTURED  # legal for truth, applied
+    assert status.payment.webhook_derived_state is PaymentState.CREATED  # illegal for derived, refused
+    refused = [
+        t
+        for t in status.transition_log
+        if t.reason == "derived_illegal_transition_CREATED_to_CAPTURED"
+    ]
+    assert len(refused) == 1
+
+
+def test_failing_a_payment_from_a_terminal_state_is_rejected(gateway: MockPaymentGateway):
+    """Mirrors test_illegal_capture_is_rejected for the other mutating
+    endpoint: once a payment is CAPTURED, PAYMENT_FAILED is not in its
+    allowed source states either -- there is no path back from "already
+    succeeded" to "failed"."""
+    from app.gateway.mock_gateway import IllegalTransitionError
+
+    _create(gateway)
+    gateway.simulate_webhook(
+        SimulateWebhookRequest(entity_id="pay_test_1", event=WebhookEventName.PAYMENT_AUTHORIZED)
+    )
+    gateway.capture_payment(CapturePaymentRequest(payment_id="pay_test_1"))
+
+    with pytest.raises(IllegalTransitionError):
+        gateway.fail_payment(FailPaymentRequest(payment_id="pay_test_1"))
+
+    assert gateway.payments["pay_test_1"].state is PaymentState.CAPTURED  # unchanged
