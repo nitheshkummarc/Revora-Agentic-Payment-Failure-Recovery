@@ -951,3 +951,29 @@ def test_failing_a_payment_from_a_terminal_state_is_rejected(gateway: MockPaymen
         gateway.fail_payment(FailPaymentRequest(payment_id="pay_test_1"))
 
     assert gateway.payments["pay_test_1"].state is PaymentState.CAPTURED  # unchanged
+
+
+def test_capturing_an_already_captured_payment_is_rejected(gateway: MockPaymentGateway):
+    """The specific guard the naive-baseline comparison (README's "duplicate-
+    payment risk" section) depends on: a soft retry that reaches Execute
+    against a payment gateway truth already shows as CAPTURED calls
+    capture_payment again, and this is the refusal that stops it from
+    silently succeeding a second time. Previously proven only end-to-end
+    through the verify_mismatch_stale_success dataset rows, never directly."""
+    from app.gateway.mock_gateway import IllegalTransitionError
+
+    _create(gateway)
+    gateway.simulate_webhook(
+        SimulateWebhookRequest(entity_id="pay_test_1", event=WebhookEventName.PAYMENT_AUTHORIZED)
+    )
+    gateway.capture_payment(CapturePaymentRequest(payment_id="pay_test_1"))
+
+    with pytest.raises(IllegalTransitionError, match="from state CAPTURED"):
+        gateway.capture_payment(CapturePaymentRequest(payment_id="pay_test_1"))
+
+    status = gateway.get_payment_status("pay_test_1")
+    captured_events = [
+        e for e in status.event_history if e.event is WebhookEventName.PAYMENT_CAPTURED
+    ]
+    assert len(captured_events) == 1  # the rejected second call left no trace of a second capture
+    assert status.payment.state is PaymentState.CAPTURED
