@@ -165,6 +165,20 @@ def test_happy_path_create_authorize_capture(gateway: MockPaymentGateway):
     assert status.pending_webhook_count == 0
 
 
+def test_repeated_creates_without_a_payment_id_mint_distinct_records(
+    gateway: MockPaymentGateway,
+):
+    """Documented, not a gap: omitting payment_id has no dedup key to check
+    against, so two calls create two payments -- real Razorpay behaviour,
+    where the merchant never chooses the id. A caller that does supply
+    payment_id gets the 409 tested elsewhere on replay."""
+    first = gateway.create_payment(CreatePaymentRequest(amount=50000, currency="INR"))
+    second = gateway.create_payment(CreatePaymentRequest(amount=50000, currency="INR"))
+
+    assert first.payment_id != second.payment_id
+    assert len(gateway.payments) == 2
+
+
 def test_happy_path_over_http(client: TestClient):
     created = client.post(
         "/payments/create", json={"payment_id": "pay_http_1", "amount": 50000}

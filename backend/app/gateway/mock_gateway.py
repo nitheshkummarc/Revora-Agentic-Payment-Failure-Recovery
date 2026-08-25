@@ -317,6 +317,18 @@ class MockPaymentGateway:
     # -- public API ------------------------------------------------------
     @_locked
     def create_payment(self, request: CreatePaymentRequest) -> PaymentRecord:
+        """Create a payment. A retried call that omits payment_id mints a
+        second record rather than deduplicating -- decided, not overlooked.
+
+        Matches real Razorpay: the merchant never chooses a payment_id, the
+        gateway assigns one, so there is no caller-supplied key to dedupe
+        against without inventing an idempotency-key mechanism this system
+        doesn't otherwise have. A caller that does supply payment_id (every
+        dataset row and every test does) already gets a hard 409 on replay,
+        below. Content-based deduplication was considered and rejected: two
+        genuinely separate payments can share amount, currency and notes, and
+        collapsing them would silently drop a legitimate second charge.
+        """
         self.settle()
         payment_id = request.payment_id or self._new_payment_id()
         if payment_id in self.payments:
