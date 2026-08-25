@@ -644,6 +644,50 @@ def test_client_construction_honours_explicit_overrides(monkeypatch):
     assert captured["max_retries"] == 0
 
 
+# --------------------------------------------------------------------------
+# Grounding guard (backstop -- see the docstring in llm_client.py for why
+# this is structurally unreachable via the normal pipeline)
+# --------------------------------------------------------------------------
+def test_grounding_guard_overrides_an_ungrounded_retry_to_escalate():
+    """Constructed input: ambiguous=False with grounded_error=None cannot occur
+    via the real tracer (it would set ambiguous=True), so this is built
+    directly to exercise the backstop in isolation, the same way the tracer
+    tests exercise CONFIDENCE_AMBIGUITY_THRESHOLD's boundary."""
+    trace = make_trace(ambiguous=False).model_copy(update={"grounded_error": None})
+    request = IntelligenceInput(
+        payment_id="pay_1", trace=trace, customer_note=None, decided_at=START
+    )
+    layer = IntelligenceLayer(llm_client=StubLLMClient())  # stub recommends RETRY_SOFT
+
+    decision = layer.recommend(request)
+
+    assert decision.recommended_action is RecommendedAction.ESCALATE_HUMAN
+    assert decision.original_llm_action is RecommendedAction.RETRY_SOFT
+    assert "grounding_guard" in decision.guard_override_reason
+
+
+def test_grounding_guard_does_not_fire_on_a_non_debiting_action():
+    """An ungrounded trace recommending a non-money-moving action needs no
+    override -- REQUEST_VERIFICATION already doesn't touch the gateway."""
+    trace = make_trace(ambiguous=False).model_copy(update={"grounded_error": None})
+    request = IntelligenceInput(
+        payment_id="pay_1", trace=trace, customer_note=None, decided_at=START
+    )
+    stub = StubLLMClient(
+        recommendation=LLMRecommendation(
+            recommended_action=RecommendedAction.REQUEST_VERIFICATION,
+            confidence=0.5,
+            reasoning="status unclear, check before acting",
+        )
+    )
+    layer = IntelligenceLayer(llm_client=stub)
+
+    decision = layer.recommend(request)
+
+    assert decision.recommended_action is RecommendedAction.REQUEST_VERIFICATION
+    assert decision.guard_override_reason is None
+
+
 def test_llm_timeout_escalates_without_blocking():
     """A network timeout must fail closed like any other provider error --
     not stall the batch waiting for a response that will never arrive."""

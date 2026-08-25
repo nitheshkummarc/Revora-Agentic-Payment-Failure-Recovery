@@ -265,6 +265,30 @@ class IntelligenceLayer:
             )
             action = RecommendedAction.ESCALATE_HUMAN
 
+        # ------------------------------------------------------------------
+        # 5. Grounding guard. A money-moving action must be backed by a real
+        #    error object, not just a model's say-so.
+        #
+        #    UNREACHABLE ON THE NORMAL PIPELINE -- a backstop, not an
+        #    independently exercised rule. The tracer sets ambiguous=True
+        #    whenever a FAILED payment has no grounded error object
+        #    (tracer.py: "no_error_object_on_failure"), and an ambiguous trace
+        #    never reaches this method at all -- it short-circuits to
+        #    REQUEST_VERIFICATION in step 2, above. So `grounded_error` is
+        #    already guaranteed non-None by the time a debiting action gets
+        #    this far. Retained because that guarantee lives in a different
+        #    module: if the ambiguity rule ever narrows, this catches what it
+        #    no longer does.
+        # ------------------------------------------------------------------
+        if action in MONEY_MOVING_ACTIONS and request.trace.grounded_error is None:
+            original_action = original_action or action
+            override_reason = (
+                "grounding_guard: recommendation "
+                f"{action.value} is money-moving but the trace carries no "
+                "grounded error object; overridden to ESCALATE_HUMAN"
+            )
+            action = RecommendedAction.ESCALATE_HUMAN
+
         decision = IntelligenceDecision(
             payment_id=request.payment_id,
             recommended_action=action,
