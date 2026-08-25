@@ -519,6 +519,19 @@ def test_llm_failure_does_not_leak_exception_detail_into_the_audit_trail():
     assert decision.short_circuit_reason == "llm_call_failed"
 
 
+def test_kill_switch_escalates_even_with_a_working_client(monkeypatch):
+    """REVORA_DISABLE_LLM must be checkable and flippable without touching how
+    the layer is wired -- a live demo needs to turn the model path off fast."""
+    monkeypatch.setenv("REVORA_DISABLE_LLM", "1")
+    layer = IntelligenceLayer(llm_client=StubLLMClient())  # would otherwise recommend RETRY_SOFT
+
+    decision = layer.recommend(make_input())
+
+    assert decision.recommended_action is RecommendedAction.ESCALATE_HUMAN
+    assert decision.llm_called is False
+    assert decision.short_circuit_reason == "llm_disabled_by_kill_switch"
+
+
 def test_no_configured_client_escalates():
     layer = IntelligenceLayer(llm_client=None)
     decision = layer.recommend(make_input())

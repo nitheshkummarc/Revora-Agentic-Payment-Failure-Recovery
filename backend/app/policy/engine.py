@@ -22,8 +22,9 @@ Two design points worth knowing before reading the code:
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
-from typing import Callable, List, Optional
+from typing import Callable, FrozenSet, List, Optional
 
 from app.core.logging import get_logger, log_event
 from app.intelligence.schemas import IntelligenceDecision, RecommendedAction
@@ -35,6 +36,23 @@ logger = get_logger("policy")
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _disabled_rule_ids() -> FrozenSet[str]:
+    """Operational kill switch: REVORA_DISABLED_RULES, a comma-separated list
+    of RuleId names, for turning off one or more of the seven value-threshold
+    rules fast during a live demo without a restart.
+
+    Scoped deliberately: only the value-threshold rules below are disablable.
+    The opt-out and missing-RBI-field gates are not in `checks` at all, so
+    this switch cannot reach them -- an absent field or an opted-out customer
+    stays a hard block regardless. Verify is a different module and has no
+    kill switch of any kind.
+    """
+    raw = os.environ.get("REVORA_DISABLED_RULES", "").strip()
+    if not raw:
+        return frozenset()
+    return frozenset(name.strip() for name in raw.split(",") if name.strip())
 
 
 class PolicyEngine:
@@ -175,8 +193,28 @@ class PolicyEngine:
             ),
         ]
 
+        disabled_rules = _disabled_rule_ids()
+        if disabled_rules:
+            log_event(
+                logger,
+                "rules_disabled_by_kill_switch",
+                payment_id=event_context.payment_id,
+                disabled_rules=sorted(disabled_rules),
+            )
         first_violation: Optional[R.Violation] = None
         for rule_id, check in checks:
+            if rule_id.value in disabled_rules:
+                evaluations.append(
+                    RuleEvaluation(
+                        rule_id=rule_id.value,
+                        passed=True,
+                        detail=(
+                            "rule disabled via REVORA_DISABLED_RULES kill switch; "
+                            "not evaluated"
+                        ),
+                    )
+                )
+                continue
             result = check()
             evaluations.append(
                 RuleEvaluation(

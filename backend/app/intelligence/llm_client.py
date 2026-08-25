@@ -226,7 +226,17 @@ class IntelligenceLayer:
 
         # ------------------------------------------------------------------
         # 3. Consult the model. Fresh call, tracer output only, note delimited.
+        #
+        #    REVORA_DISABLE_LLM is an operational kill switch: set it to fall
+        #    back to the same fail-safe escalation as a missing client,
+        #    without having to change how the layer is wired. Checked here
+        #    rather than at construction so it can be flipped for a live demo
+        #    without a restart.
         # ------------------------------------------------------------------
+        if os.environ.get("REVORA_DISABLE_LLM"):
+            return self._fail_safe(
+                request, note, report, now, reason="llm_disabled_by_kill_switch"
+            )
         if self._client is None:
             return self._fail_safe(
                 request,

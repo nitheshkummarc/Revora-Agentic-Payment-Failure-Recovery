@@ -332,6 +332,37 @@ def test_discount_exceeds_limit_is_blocked(engine):
     assert decision.overrode_llm is True
 
 
+def test_kill_switch_disables_only_the_named_rule(engine, monkeypatch):
+    """REVORA_DISABLED_RULES has to be checkable per-rule and fast, without a
+    restart, but must not reach the opt-out or missing-field gates -- those
+    aren't in the disablable `checks` list at all."""
+    monkeypatch.setenv("REVORA_DISABLED_RULES", "MAX_DISCOUNT_EXCEEDED")
+
+    decision = engine.validate(llm(), context(discount_amount=500_000))  # Rs.5,000
+
+    assert decision.approved is True
+    disabled_eval = next(
+        e for e in decision.rules_evaluated if e.rule_id == "MAX_DISCOUNT_EXCEEDED"
+    )
+    assert disabled_eval.passed is True
+    assert "kill switch" in disabled_eval.detail
+
+    # A different rule in the same batch is untouched by the switch.
+    monkeypatch.setenv("REVORA_DISABLED_RULES", "MAX_DISCOUNT_EXCEEDED")
+    still_blocked = engine.validate(llm(), context(retry_count=3))
+    assert still_blocked.approved is False
+    assert still_blocked.rule_id == "MAX_RETRIES_EXCEEDED"
+
+
+def test_kill_switch_cannot_disable_the_opt_out_gate(engine, monkeypatch):
+    monkeypatch.setenv("REVORA_DISABLED_RULES", "CUSTOMER_OPTED_OUT")
+
+    decision = engine.validate(llm(), context(opted_out=True))
+
+    assert decision.approved is False
+    assert decision.rule_id == "CUSTOMER_OPTED_OUT"
+
+
 def test_discount_exactly_at_the_cap_is_allowed(engine):
     decision = engine.validate(llm(), context(discount_amount=R.MAX_DISCOUNT_PAISE))
     assert decision.approved is True
