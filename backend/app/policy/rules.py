@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Optional
 
-from app.intelligence.schemas import RecommendedAction
+from app.intelligence.schemas import MONEY_MOVING_ACTIONS, RecommendedAction
 
 # --------------------------------------------------------------------------
 # Regulatory and dunning limits
@@ -90,7 +90,11 @@ RBI_CIRCULAR = "RBI/DPSS/2026-27/396"
 
 #: Actions that actually debit a customer or re-attempt their payment. Only
 #: these are gated on the RBI fields; the rest read state or stop.
-DEBITING_ACTIONS = frozenset({RecommendedAction.RETRY_SOFT})
+#:
+#: Same set the intelligence layer's injection guard gates on -- imported
+#: rather than redefined, so the two cannot silently disagree about what
+#: counts as money-moving if a new debiting action is ever added.
+DEBITING_ACTIONS = MONEY_MOVING_ACTIONS
 
 #: Actions an opt-out blocks.
 #:

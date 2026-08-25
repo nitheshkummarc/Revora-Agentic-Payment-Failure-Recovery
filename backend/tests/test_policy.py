@@ -626,6 +626,15 @@ def test_retry_soft_is_the_only_debiting_action():
     assert R.DEBITING_ACTIONS == frozenset({RecommendedAction.RETRY_SOFT})
 
 
+def test_debiting_actions_is_the_same_object_as_the_intelligence_layers_guard_set():
+    """Not just equal -- the same frozenset instance, imported rather than
+    redefined, so the policy engine's gate and the injection guard's gate
+    cannot silently diverge if a new debiting action is ever added."""
+    from app.intelligence.schemas import MONEY_MOVING_ACTIONS
+
+    assert R.DEBITING_ACTIONS is MONEY_MOVING_ACTIONS
+
+
 # --------------------------------------------------------------------------
 # Precedence
 # --------------------------------------------------------------------------
