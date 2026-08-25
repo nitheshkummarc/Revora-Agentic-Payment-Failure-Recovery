@@ -202,6 +202,125 @@ class WebhookDeliveryClient:
         return False
 
 
+class SubscriptionLifecycle:
+    """Subscription state machine: activation/pending/halt transitions and the
+    3-failed-charge auto-halt rule.
+
+    Operates on the gateway's own subscriptions/event_history/transition_log
+    dicts rather than owning private copies -- a subscription and its parent
+    payment share the same transition-log and event-history keying by
+    entity_id, and duplicating that keying here would risk the two drifting
+    apart on which one is authoritative.
+    """
+
+    def __init__(
+        self,
+        subscriptions: Dict[str, SubscriptionRecord],
+        event_history: Dict[str, List[WebhookEvent]],
+        transition_log: Dict[str, List[TransitionLogEntry]],
+        settings: GatewaySettings,
+        now: Callable[[], datetime],
+        log_transition: Callable[..., TransitionLogEntry],
+        emit: Callable[..., DeliveryPlan],
+    ) -> None:
+        self._subscriptions = subscriptions
+        self._event_history = event_history
+        self._transition_log = transition_log
+        self._settings = settings
+        self._now = now
+        self._log_transition = log_transition
+        self._emit = emit
+        # Subscriptions that crossed the halt threshold and still owe a
+        # subscription.halted event. Deferred rather than emitted inline so the
+        # halt is always logged AFTER the charge attempt that triggered it.
+        self._deferred_halts: List[str] = []
+        self._draining = False
+
+    def get_or_create(self, subscription_id: str) -> SubscriptionRecord:
+        sub = self._subscriptions.get(subscription_id)
+        if sub is not None:
+            return sub
+        now = self._now()
+        sub = SubscriptionRecord(
+            subscription_id=subscription_id,
+            state=SubscriptionState.CREATED,
+            failed_charge_attempts=0,
+            created_at=now,
+            updated_at=now,
+        )
+        self._subscriptions[subscription_id] = sub
+        self._event_history.setdefault(subscription_id, [])
+        self._transition_log.setdefault(subscription_id, [])
+        return sub
+
+    def transition(self, event: WebhookEvent) -> None:
+        sub = self._subscriptions.get(event.entity_id)
+        if sub is None:
+            return
+        target = _SUBSCRIPTION_TRANSITIONS.get(event.event)
+        if target is None:
+            return
+        previous = sub.state
+
+        if event.event is WebhookEventName.SUBSCRIPTION_CHARGED:
+            sub.failed_charge_attempts = 0
+        elif event.event is WebhookEventName.SUBSCRIPTION_PENDING:
+            sub.failed_charge_attempts += 1
+
+        sub.state = target
+        sub.updated_at = self._now()
+        self._log_transition(
+            event.entity_id,
+            applied=True,
+            reason="subscription_transition",
+            event=event,
+            from_state=previous.value,
+            to_state=target.value,
+        )
+
+        # Subscriptions halt after exactly three charge-retry attempts.
+        # Queued rather than emitted inline -- see drain_deferred_halts.
+        threshold = self._settings.subscription_halt_after_failed_charges
+        if (
+            event.event is WebhookEventName.SUBSCRIPTION_PENDING
+            and sub.failed_charge_attempts >= threshold
+            and sub.state is not SubscriptionState.HALTED
+            and sub.subscription_id not in self._deferred_halts
+        ):
+            self._deferred_halts.append(sub.subscription_id)
+
+    def drain_deferred_halts(self) -> None:
+        """Emit `subscription.halted` for any subscription that crossed the
+        3-failed-charge threshold. Guarded against re-entrancy so a halt
+        emitted mid-delivery cannot recurse into itself."""
+        if self._draining:
+            return
+        self._draining = True
+        try:
+            while self._deferred_halts:
+                subscription_id = self._deferred_halts.pop(0)
+                sub = self._subscriptions.get(subscription_id)
+                if sub is None or sub.state is SubscriptionState.HALTED:
+                    continue
+                threshold = self._settings.subscription_halt_after_failed_charges
+                self._log_transition(
+                    subscription_id,
+                    applied=True,
+                    reason=f"subscription_halt_threshold_reached_{threshold}_failed_charge_attempts",
+                    from_state=sub.state.value,
+                    to_state=SubscriptionState.HALTED.value,
+                )
+                self._emit(
+                    entity_id=subscription_id,
+                    entity_type="subscription",
+                    event_name=WebhookEventName.SUBSCRIPTION_HALTED,
+                    error=None,
+                    chaos=None,
+                )
+        finally:
+            self._draining = False
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -249,11 +368,15 @@ class MockPaymentGateway:
         self._applied_truth: set = set()
         self._last_applied_sequence: Dict[str, int] = {}
         self._id_counter = itertools.count(1)
-        # Subscriptions that crossed the halt threshold and still owe a
-        # subscription.halted event. Deferred rather than emitted inline so the
-        # halt is always logged AFTER the charge attempt that triggered it.
-        self._deferred_halts: List[str] = []
-        self._draining = False
+        self._subscription_lifecycle = SubscriptionLifecycle(
+            subscriptions=self.subscriptions,
+            event_history=self.event_history,
+            transition_log=self.transition_log,
+            settings=self.settings,
+            now=self.now,
+            log_transition=self._log_transition,
+            emit=self._emit,
+        )
 
     # -- clock / ids -----------------------------------------------------
     def now(self) -> datetime:
@@ -351,7 +474,7 @@ class MockPaymentGateway:
         self.event_history.setdefault(payment_id, [])
         self.transition_log.setdefault(payment_id, [])
         if request.subscription_id:
-            self._get_or_create_subscription(request.subscription_id)
+            self._subscription_lifecycle.get_or_create(request.subscription_id)
         self._log_transition(
             payment_id,
             applied=True,
@@ -417,7 +540,7 @@ class MockPaymentGateway:
         event_name = request.event
         if event_name in SUBSCRIPTION_EVENTS:
             entity_type = "subscription"
-            self._get_or_create_subscription(request.entity_id)
+            self._subscription_lifecycle.get_or_create(request.entity_id)
         elif event_name in PAYMENT_EVENTS:
             entity_type = "payment"
             self._require_payment(request.entity_id)
@@ -552,7 +675,7 @@ class MockPaymentGateway:
                 )
 
         self.settle()
-        self._drain_deferred_halts()
+        self._subscription_lifecycle.drain_deferred_halts()
         return plan
 
     def _preview_state(self, entity_id: str, entity_type: str, event_name: WebhookEventName) -> str:
@@ -590,8 +713,8 @@ class MockPaymentGateway:
             for sd in due:
                 if self._deliver(sd.event):
                     delivered.append(sd.event)
-            self._drain_deferred_halts()
-        self._drain_deferred_halts()
+            self._subscription_lifecycle.drain_deferred_halts()
+        self._subscription_lifecycle.drain_deferred_halts()
         return delivered
 
     def _deliver(self, event: WebhookEvent) -> bool:
@@ -634,7 +757,7 @@ class MockPaymentGateway:
         if event.entity_type == "payment":
             self._transition_payment_truth(event)
         else:
-            self._transition_subscription(event)
+            self._subscription_lifecycle.transition(event)
 
     def _transition_payment_truth(self, event: WebhookEvent) -> None:
         record = self.payments.get(event.entity_id)
@@ -742,96 +865,12 @@ class MockPaymentGateway:
             to_state=target.value,
         )
 
-    def _transition_subscription(self, event: WebhookEvent) -> None:
-        sub = self.subscriptions.get(event.entity_id)
-        if sub is None:
-            return
-        target = _SUBSCRIPTION_TRANSITIONS.get(event.event)
-        if target is None:
-            return
-        previous = sub.state
-
-        if event.event is WebhookEventName.SUBSCRIPTION_CHARGED:
-            sub.failed_charge_attempts = 0
-        elif event.event is WebhookEventName.SUBSCRIPTION_PENDING:
-            sub.failed_charge_attempts += 1
-
-        sub.state = target
-        sub.updated_at = self.now()
-        self._log_transition(
-            event.entity_id,
-            applied=True,
-            reason="subscription_transition",
-            event=event,
-            from_state=previous.value,
-            to_state=target.value,
-        )
-
-        # Subscriptions halt after exactly three charge-retry attempts.
-        # Queued rather than emitted inline -- see _drain_deferred_halts.
-        threshold = self.settings.subscription_halt_after_failed_charges
-        if (
-            event.event is WebhookEventName.SUBSCRIPTION_PENDING
-            and sub.failed_charge_attempts >= threshold
-            and sub.state is not SubscriptionState.HALTED
-            and sub.subscription_id not in self._deferred_halts
-        ):
-            self._deferred_halts.append(sub.subscription_id)
-
-    def _drain_deferred_halts(self) -> None:
-        """Emit `subscription.halted` for any subscription that crossed the
-        3-failed-charge threshold. Guarded against re-entrancy so a halt
-        emitted mid-delivery cannot recurse into itself."""
-        if self._draining:
-            return
-        self._draining = True
-        try:
-            while self._deferred_halts:
-                subscription_id = self._deferred_halts.pop(0)
-                sub = self.subscriptions.get(subscription_id)
-                if sub is None or sub.state is SubscriptionState.HALTED:
-                    continue
-                threshold = self.settings.subscription_halt_after_failed_charges
-                self._log_transition(
-                    subscription_id,
-                    applied=True,
-                    reason=f"subscription_halt_threshold_reached_{threshold}_failed_charge_attempts",
-                    from_state=sub.state.value,
-                    to_state=SubscriptionState.HALTED.value,
-                )
-                self._emit(
-                    entity_id=subscription_id,
-                    entity_type="subscription",
-                    event_name=WebhookEventName.SUBSCRIPTION_HALTED,
-                    error=None,
-                    chaos=None,
-                )
-        finally:
-            self._draining = False
-
     # -- lookups ----------------------------------------------------------
     def _require_payment(self, payment_id: str) -> PaymentRecord:
         record = self.payments.get(payment_id)
         if record is None:
             raise EntityNotFoundError(f"payment {payment_id} not found")
         return record
-
-    def _get_or_create_subscription(self, subscription_id: str) -> SubscriptionRecord:
-        sub = self.subscriptions.get(subscription_id)
-        if sub is not None:
-            return sub
-        now = self.now()
-        sub = SubscriptionRecord(
-            subscription_id=subscription_id,
-            state=SubscriptionState.CREATED,
-            failed_charge_attempts=0,
-            created_at=now,
-            updated_at=now,
-        )
-        self.subscriptions[subscription_id] = sub
-        self.event_history.setdefault(subscription_id, [])
-        self.transition_log.setdefault(subscription_id, [])
-        return sub
 
     @_locked
     def reset(self) -> None:
