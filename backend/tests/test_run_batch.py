@@ -42,3 +42,20 @@ def test_falls_back_to_stub_client_when_key_absent(run_batch, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     client = run_batch._select_llm_client()
     assert isinstance(client, StubLLMClient)
+
+
+def test_seed_and_run_twice_in_one_process_is_reproducible(run_batch, monkeypatch):
+    """seed_and_run() constructs its own gateway per call rather than reaching
+    into any process-wide singleton, so two calls in the same process must not
+    interfere with each other's RNG stream or circuit-breaker state."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    import json
+
+    dataset = json.loads(run_batch.DATASET_PATH.read_text(encoding="utf-8"))
+
+    first = run_batch.seed_and_run(dataset, failure_rate=0.05)
+    second = run_batch.seed_and_run(dataset, failure_rate=0.05)
+
+    first_outcomes = [(e.payment_id, e.outcome.value) for e in first.events]
+    second_outcomes = [(e.payment_id, e.outcome.value) for e in second.events]
+    assert first_outcomes == second_outcomes

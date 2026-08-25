@@ -668,6 +668,51 @@ def test_delivery_while_the_circuit_is_already_open_is_refused_not_attempted(
     assert len(client.delivery_log) == attempts_after_trip
 
 
+def test_circuit_stays_open_before_the_cooldown_elapses(clock: FakeClock):
+    from app.gateway.mock_gateway import CircuitOpenError
+
+    settings = GatewaySettings(
+        webhook_delivery_failure_rate=1.0,
+        delivery_max_attempts=1,
+        circuit_breaker_threshold=1,
+        circuit_breaker_cooldown_seconds=30.0,
+    )
+    client = WebhookDeliveryClient(settings, clock, ScriptedRandom([0.0, 0.0]))
+
+    with pytest.raises(CircuitOpenError):
+        client.deliver(_dummy_event())
+    assert client.circuit_open is True
+
+    clock.advance(29.0)
+    with pytest.raises(CircuitOpenError) as caught:
+        client.deliver(_dummy_event())
+    assert "circuit breaker is open after" in str(caught.value)
+    assert client.circuit_open is True
+
+
+def test_circuit_closes_itself_once_the_cooldown_elapses(clock: FakeClock):
+    """Without this, a failure burst disables delivery for the rest of the
+    process's life -- nothing else in the system calls reset_circuit()."""
+    from app.gateway.mock_gateway import CircuitOpenError
+
+    settings = GatewaySettings(
+        webhook_delivery_failure_rate=0.5,
+        delivery_max_attempts=1,
+        circuit_breaker_threshold=1,
+        circuit_breaker_cooldown_seconds=30.0,
+    )
+    client = WebhookDeliveryClient(settings, clock, ScriptedRandom([0.0, 0.9]))
+
+    with pytest.raises(CircuitOpenError):
+        client.deliver(_dummy_event())
+    assert client.circuit_open is True
+
+    clock.advance(30.0)
+    assert client.deliver(_dummy_event()) is True
+    assert client.circuit_open is False
+    assert client.consecutive_failures == 0
+
+
 def test_an_open_circuit_drops_later_webhooks_without_touching_gateway_truth(
     clock: FakeClock,
 ):

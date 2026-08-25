@@ -39,6 +39,12 @@ class GatewaySettings(BaseModel):
     # choice, not a documented figure.
     circuit_breaker_threshold: int = Field(default=5, ge=1)
 
+    # How long the breaker stays open before the next delivery attempt is let
+    # through again. Local tuning choice: long enough that a transient burst
+    # of failures doesn't immediately reopen it, short enough that a demo
+    # session recovers within itself rather than needing a manual reset.
+    circuit_breaker_cooldown_seconds: float = Field(default=30.0, ge=0.0)
+
     # Subscriptions halt after exactly this many charge-retry attempts,
     # matching Razorpay's documented subscription behaviour.
     subscription_halt_after_failed_charges: int = Field(default=3, ge=1)

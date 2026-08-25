@@ -134,11 +134,28 @@ class WebhookDeliveryClient:
         self._rng = rng or random.Random(settings.random_seed)
         self.consecutive_failures = 0
         self.circuit_open = False
+        self._circuit_opened_at: Optional[datetime] = None
         self.delivery_log: List[DeliveryAttemptLogEntry] = []
 
     def reset_circuit(self) -> None:
         self.consecutive_failures = 0
         self.circuit_open = False
+        self._circuit_opened_at = None
+
+    def _maybe_close_after_cooldown(self) -> None:
+        """Let the breaker close itself once the cooldown has elapsed.
+
+        Without this, a transient failure burst -- five consecutive drops,
+        ~3e-7 likely at the 5% default but routine at a demo's raised failure
+        rate -- disables delivery for the rest of the process's life. The
+        clock is the caller's injected one, so this is a comparison against
+        recorded state, not a sleep.
+        """
+        if not self.circuit_open or self._circuit_opened_at is None:
+            return
+        elapsed = (self._clock() - self._circuit_opened_at).total_seconds()
+        if elapsed >= self.settings.circuit_breaker_cooldown_seconds:
+            self.reset_circuit()
 
     def deliver(self, event: WebhookEvent) -> bool:
         """Attempt delivery. Returns True on success.
@@ -146,6 +163,7 @@ class WebhookDeliveryClient:
         Raises CircuitOpenError if the breaker has already tripped -- the
         caller records the event as dropped rather than pretending it landed.
         """
+        self._maybe_close_after_cooldown()
         if self.circuit_open:
             raise CircuitOpenError(
                 "webhook delivery circuit breaker is open after "
@@ -161,6 +179,7 @@ class WebhookDeliveryClient:
                 self.consecutive_failures += 1
                 if self.consecutive_failures >= self.settings.circuit_breaker_threshold:
                     self.circuit_open = True
+                    self._circuit_opened_at = self._clock()
             self.delivery_log.append(
                 DeliveryAttemptLogEntry(
                     event_id=event.event_id,
