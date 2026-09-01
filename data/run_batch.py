@@ -18,13 +18,15 @@ from the seed instant to the reference instant, and not at all during the batch
 itself, so every payment is observed at the same moment. That is what makes a
 dropped webhook read as silence and a delayed one read as still in flight.
 
-Model. `_select_llm_client()` uses `AnthropicLLMClient` when `ANTHROPIC_API_KEY`
-is set in the environment, and `StubLLMClient` otherwise -- the stub is a
-fallback for a missing key, not the default. A stubbed run needs no key and
-returns the same recommendation for every event, so everything it measures is a
-property of the deterministic pipeline -- resolution, tracing, policy and
-verification -- and not of any model's judgement. Figures from a stubbed run
-must be described that way; check the printed "Model:" line to know which ran.
+Model. `_select_llm_client()` picks the first available option in this order:
+Gemini (with Groq as an automatic fallback if both keys are present), Groq
+alone, Anthropic, then the offline stub -- each gated on its own API key being
+set. The stub is a fallback for no key at all, not the default. A stubbed run
+needs no key and returns the same recommendation for every event, so everything
+it measures is a property of the deterministic pipeline -- resolution, tracing,
+policy and verification -- and not of any model's judgement. Figures from a
+stubbed run must be described that way; check the printed "Model:" line to know
+which one ran.
 
 Usage:
     python data/run_batch.py [--dataset PATH] [--failure-rate 0.05]
@@ -54,6 +56,9 @@ from app.gateway.schemas import (  # noqa: E402
 )
 from app.intelligence.llm_client import (  # noqa: E402
     AnthropicLLMClient,
+    FallbackLLMClient,
+    GeminiLLMClient,
+    GroqLLMClient,
     IntelligenceLayer,
     LLMClient,
     StubLLMClient,
@@ -131,16 +136,32 @@ def apply_step(gateway: MockPaymentGateway, step: Dict[str, Any]) -> None:
 
 
 def _select_llm_client() -> LLMClient:
-    """AnthropicLLMClient when a key is present; StubLLMClient otherwise.
+    """Gemini (+ Groq fallback if both keys present), then Groq alone, then
+    Anthropic, then the offline stub -- each gated on its own API key.
 
-    The stub is a fallback for a missing key, not the default -- a run with a
-    key available must exercise the real model, not silently fall back to
-    canned output.
+    The stub is a fallback for no key at all, not the default -- a run with a
+    key available must exercise a real model, not silently fall back to
+    canned output. Gemini is checked first because it is free-tier and gives
+    the same schema-validated structured-output guarantee Anthropic's paid
+    API does; Anthropic stays available for anyone who already has a key.
     """
-    if os.environ.get("ANTHROPIC_API_KEY"):
+    gemini_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    groq_key = os.environ.get("GROQ_API_KEY")
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+
+    if gemini_key and groq_key:
+        print("Model: GeminiLLMClient with GroqLLMClient fallback (GEMINI_API_KEY and GROQ_API_KEY present)")
+        return FallbackLLMClient(primary=GeminiLLMClient(), fallback=GroqLLMClient())
+    if gemini_key:
+        print("Model: GeminiLLMClient (GEMINI_API_KEY present; set GROQ_API_KEY too for a fallback)")
+        return GeminiLLMClient()
+    if groq_key:
+        print("Model: GroqLLMClient (GROQ_API_KEY present, no GEMINI_API_KEY)")
+        return GroqLLMClient()
+    if anthropic_key:
         print("Model: AnthropicLLMClient (ANTHROPIC_API_KEY present)")
         return AnthropicLLMClient()
-    print("Model: StubLLMClient (no ANTHROPIC_API_KEY; offline deterministic client)")
+    print("Model: StubLLMClient (no model API key present; offline deterministic client)")
     return StubLLMClient()
 
 
