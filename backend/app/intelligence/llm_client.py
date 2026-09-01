@@ -1,11 +1,25 @@
 """Model client and recommendation-layer entry point.
 
-Two things live here:
+Several things live here:
+
+* `GeminiLLMClient`, the default -- a thin wrapper over the Gemini Interactions
+  API using its structured-output feature, so valid JSON is guaranteed by the
+  API rather than coaxed out with a "please output JSON" instruction and a
+  regex. Runs on Gemini's free tier.
+
+* `GroqLLMClient`, a thin wrapper over Groq's OpenAI-compatible chat
+  completions API running GPT-OSS-120B, using strict JSON-schema structured
+  output for the same guarantee. Used as the fallback when Gemini is
+  unavailable or errors.
+
+* `FallbackLLMClient`, which composes the two above: tries Gemini, falls back
+  to Groq on any failure. Implements the same protocol as a single provider,
+  so `IntelligenceLayer` needs no changes to use it.
 
 * `AnthropicLLMClient`, a thin wrapper over the Anthropic Messages API using the
-  provider's structured-output feature (`messages.parse` with a Pydantic model),
-  so valid JSON is guaranteed by the API rather than coaxed out with a "please
-  output JSON" instruction and a regex.
+  provider's own structured-output feature (`messages.parse` with a Pydantic
+  model). Kept as an explicit opt-in for anyone with a paid key; no longer the
+  default given Gemini's free tier covers the same structured-output guarantee.
 
 * `IntelligenceLayer`, the public entry point. It sanitises, decides whether the
   model should be consulted at all, and applies the deterministic safety guard
@@ -26,7 +40,12 @@ import os
 from datetime import datetime, timezone
 from typing import Callable, List, Optional, Protocol
 
-from app.core.config import INTELLIGENCE_SETTINGS, env_flag
+from app.core.config import (
+    ANTHROPIC_SETTINGS,
+    GEMINI_SETTINGS,
+    GROQ_SETTINGS,
+    env_flag,
+)
 from app.core.logging import get_logger, log_event
 from app.intelligence.prompts import SYSTEM_PROMPT, build_user_content
 from app.intelligence.sanitizer import sanitize_customer_note
@@ -40,8 +59,10 @@ from app.intelligence.schemas import (
 
 logger = get_logger("intelligence")
 
-#: Default model for recommendation calls.
-DEFAULT_MODEL = "claude-opus-5"
+#: Default models for recommendation calls, one per provider.
+DEFAULT_GEMINI_MODEL = "gemini-3.7-flash"
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
+DEFAULT_ANTHROPIC_MODEL = "claude-opus-5"
 DEFAULT_MAX_TOKENS = 2048
 
 
@@ -64,7 +85,7 @@ class AnthropicLLMClient:
 
     def __init__(
         self,
-        model: str = DEFAULT_MODEL,
+        model: str = DEFAULT_ANTHROPIC_MODEL,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         api_key: Optional[str] = None,
         client: Optional[object] = None,
@@ -85,8 +106,8 @@ class AnthropicLLMClient:
             ) from exc
         key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         client_kwargs = {
-            "timeout": timeout if timeout is not None else INTELLIGENCE_SETTINGS.request_timeout_seconds,
-            "max_retries": max_retries if max_retries is not None else INTELLIGENCE_SETTINGS.max_retries,
+            "timeout": timeout if timeout is not None else ANTHROPIC_SETTINGS.request_timeout_seconds,
+            "max_retries": max_retries if max_retries is not None else ANTHROPIC_SETTINGS.max_retries,
         }
         self._client = (
             anthropic.Anthropic(api_key=key, **client_kwargs)
@@ -127,6 +148,178 @@ class AnthropicLLMClient:
                 "structured output did not validate against LLMRecommendation"
             )
         return parsed
+
+
+class GeminiLLMClient:
+    """Gemini Interactions API client using structured output.
+
+    The default provider: Gemini's free tier gives the same schema-validated
+    output guarantee Anthropic's structured output does, at no cost.
+    """
+
+    def __init__(
+        self,
+        model: str = DEFAULT_GEMINI_MODEL,
+        max_output_tokens: int = DEFAULT_MAX_TOKENS,
+        api_key: Optional[str] = None,
+        client: Optional[object] = None,
+        timeout: Optional[float] = None,
+        max_retries: Optional[int] = None,
+    ) -> None:
+        self.model = model
+        self.max_output_tokens = max_output_tokens
+        if client is not None:
+            self._client = client
+            return
+        try:
+            from google import genai  # imported lazily, like the anthropic import above
+            from google.genai import types
+        except ImportError as exc:  # pragma: no cover - depends on environment
+            raise LLMUnavailableError(
+                "the `google-genai` package is not installed; install it or pass "
+                "a different LLMClient implementation"
+            ) from exc
+        key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        timeout_seconds = timeout if timeout is not None else GEMINI_SETTINGS.request_timeout_seconds
+        retries = max_retries if max_retries is not None else GEMINI_SETTINGS.max_retries
+        self._client = genai.Client(
+            api_key=key,
+            http_options=types.HttpOptions(
+                # The SDK's own timeout field takes milliseconds; every setting
+                # this project defines is in seconds, so the conversion happens
+                # here, at the one place that has to know both units.
+                timeout=int(timeout_seconds * 1000),
+                # attempts counts the original request, unlike max_retries
+                # everywhere else in this file, which counts retries after it.
+                retry_options=types.HttpRetryOptions(attempts=retries + 1),
+            ),
+        )
+
+    def recommend(self, system_prompt: str, user_content: str) -> LLMRecommendation:
+        interaction = self._client.interactions.create(
+            model=self.model,
+            input=user_content,
+            system_instruction=system_prompt,
+            response_format={
+                "type": "text",
+                "mime_type": "application/json",
+                "schema": LLMRecommendation.model_json_schema(),
+            },
+            generation_config={"max_output_tokens": self.max_output_tokens},
+        )
+        if not interaction.output_text:
+            raise LLMUnavailableError("Gemini returned no output_text")
+        return LLMRecommendation.model_validate_json(interaction.output_text)
+
+
+class GroqLLMClient:
+    """Groq chat completions client running GPT-OSS-120B, using strict
+    JSON-schema structured output for the same validation guarantee as the
+    other two providers. Used as the fallback when Gemini is unavailable or
+    errors -- Groq's own free tier is generous enough to cover a full batch
+    replay on its own if needed.
+
+    GPT-OSS-120B's strict mode has been reported to occasionally return
+    free-form text instead of the requested schema (a known issue on Groq's
+    side, not something this client can detect in advance). When that
+    happens, LLMRecommendation.model_validate_json below raises, which
+    IntelligenceLayer already treats as any other provider failure -- there
+    is nothing further to fall back to from here, so it fails closed to
+    ESCALATE_HUMAN rather than acting on unparsed text.
+    """
+
+    def __init__(
+        self,
+        model: str = DEFAULT_GROQ_MODEL,
+        max_output_tokens: int = DEFAULT_MAX_TOKENS,
+        api_key: Optional[str] = None,
+        client: Optional[object] = None,
+        timeout: Optional[float] = None,
+        max_retries: Optional[int] = None,
+    ) -> None:
+        self.model = model
+        self.max_output_tokens = max_output_tokens
+        if client is not None:
+            self._client = client
+            return
+        try:
+            import groq  # imported lazily, like the anthropic import above
+        except ImportError as exc:  # pragma: no cover - depends on environment
+            raise LLMUnavailableError(
+                "the `groq` package is not installed; install it or pass a "
+                "different LLMClient implementation"
+            ) from exc
+        key = api_key or os.environ.get("GROQ_API_KEY")
+        self._client = groq.Groq(
+            api_key=key,
+            timeout=timeout if timeout is not None else GROQ_SETTINGS.request_timeout_seconds,
+            max_retries=max_retries if max_retries is not None else GROQ_SETTINGS.max_retries,
+        )
+
+    def recommend(self, system_prompt: str, user_content: str) -> LLMRecommendation:
+        response = self._client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "llm_recommendation",
+                    "strict": True,
+                    "schema": LLMRecommendation.model_json_schema(),
+                },
+            },
+            max_completion_tokens=self.max_output_tokens,
+        )
+        content = response.choices[0].message.content
+        if not content:
+            raise LLMUnavailableError("Groq returned no message content")
+        return LLMRecommendation.model_validate_json(content)
+
+
+class FallbackLLMClient:
+    """Tries a primary client, falling back to a secondary one if the primary
+    raises. Implements the same LLMClient protocol as either backend alone,
+    so IntelligenceLayer needs no changes to use it.
+
+    Only the primary's failure triggers a fallback attempt; a failure from
+    the secondary propagates normally, so IntelligenceLayer's own fail-safe
+    handles it exactly like a single-provider failure would -- this class
+    adds one extra chance, not a retry loop.
+
+    `model` reflects whichever backend answered the most recent call, not
+    always the primary's -- IntelligenceLayer reads it immediately after
+    recommend() returns to record which model actually produced each
+    decision, and reporting the primary's name for a call the fallback
+    answered would misattribute it.
+    """
+
+    def __init__(self, primary: LLMClient, fallback: LLMClient) -> None:
+        self._primary = primary
+        self._fallback = fallback
+        self.model = primary.model
+
+    def recommend(self, system_prompt: str, user_content: str) -> LLMRecommendation:
+        try:
+            result = self._primary.recommend(system_prompt, user_content)
+            self.model = self._primary.model
+            return result
+        except AssertionError:
+            raise
+        except Exception as exc:
+            log_event(
+                logger,
+                "llm_fallback_triggered",
+                primary_model=self._primary.model,
+                fallback_model=self._fallback.model,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            result = self._fallback.recommend(system_prompt, user_content)
+            self.model = self._fallback.model
+            return result
 
 
 class StubLLMClient:
@@ -379,6 +572,9 @@ class IntelligenceLayer:
 __all__ = [
     "AnthropicLLMClient",
     "ExplodingLLMClient",
+    "FallbackLLMClient",
+    "GeminiLLMClient",
+    "GroqLLMClient",
     "IntelligenceLayer",
     "LLMClient",
     "LLMUnavailableError",

@@ -19,10 +19,16 @@ import pytest
 
 from app.gateway.schemas import ErrorObject, ErrorSource
 from app.intelligence.llm_client import (
-    DEFAULT_MODEL,
+    DEFAULT_ANTHROPIC_MODEL,
+    DEFAULT_GEMINI_MODEL,
+    DEFAULT_GROQ_MODEL,
     AnthropicLLMClient,
     ExplodingLLMClient,
+    FallbackLLMClient,
+    GeminiLLMClient,
+    GroqLLMClient,
     IntelligenceLayer,
+    LLMUnavailableError,
     StubLLMClient,
 )
 from app.intelligence.prompts import SYSTEM_PROMPT, build_user_content
@@ -126,8 +132,8 @@ def test_llm_cannot_invent_a_new_action_string():
         )
 
 
-def test_default_model_is_current():
-    assert DEFAULT_MODEL == "claude-opus-5"
+def test_default_anthropic_model_is_current():
+    assert DEFAULT_ANTHROPIC_MODEL == "claude-opus-5"
 
 
 # --------------------------------------------------------------------------
@@ -707,7 +713,7 @@ def test_client_construction_sets_an_explicit_timeout_and_retry_count(monkeypatc
     left implicit."""
     import anthropic
 
-    from app.core.config import INTELLIGENCE_SETTINGS
+    from app.core.config import ANTHROPIC_SETTINGS
 
     captured = {}
 
@@ -720,8 +726,8 @@ def test_client_construction_sets_an_explicit_timeout_and_retry_count(monkeypatc
 
     AnthropicLLMClient()
 
-    assert captured["timeout"] == INTELLIGENCE_SETTINGS.request_timeout_seconds
-    assert captured["max_retries"] == INTELLIGENCE_SETTINGS.max_retries
+    assert captured["timeout"] == ANTHROPIC_SETTINGS.request_timeout_seconds
+    assert captured["max_retries"] == ANTHROPIC_SETTINGS.max_retries
 
 
 def test_client_construction_honours_explicit_overrides(monkeypatch):
@@ -740,6 +746,239 @@ def test_client_construction_honours_explicit_overrides(monkeypatch):
 
     assert captured["timeout"] == 5.0
     assert captured["max_retries"] == 0
+
+
+# --------------------------------------------------------------------------
+# GeminiLLMClient
+# --------------------------------------------------------------------------
+class RecordingInteractions:
+    def __init__(self, output_text: str) -> None:
+        self.kwargs = None
+        self._output_text = output_text
+
+    def create(self, **kwargs):
+        self.kwargs = kwargs
+        return SimpleNamespace(output_text=self._output_text)
+
+
+class RecordingGeminiClient:
+    def __init__(self, output_text: str) -> None:
+        self.interactions = RecordingInteractions(output_text)
+
+
+def _recommendation_json(action: RecommendedAction = RecommendedAction.RETRY_SOFT) -> str:
+    return LLMRecommendation(
+        recommended_action=action,
+        confidence=0.8,
+        reasoning="recorded",
+    ).model_dump_json()
+
+
+def test_gemini_client_sends_system_instruction_and_schema_separately():
+    """system_instruction and input are separate fields on this API, unlike
+    Anthropic's system-plus-messages shape -- the two must not be concatenated
+    into one string, or the untrusted-note delimiting the sanitizer relies on
+    loses its meaning."""
+    recorder = RecordingGeminiClient(_recommendation_json())
+    client = GeminiLLMClient(client=recorder)
+
+    client.recommend(SYSTEM_PROMPT, "trace summary for one payment")
+
+    kwargs = recorder.interactions.kwargs
+    assert kwargs["system_instruction"] == SYSTEM_PROMPT
+    assert kwargs["input"] == "trace summary for one payment"
+    assert kwargs["response_format"]["schema"] == LLMRecommendation.model_json_schema()
+    assert kwargs["response_format"]["mime_type"] == "application/json"
+
+
+def test_gemini_client_parses_output_text_into_the_recommendation():
+    recorder = RecordingGeminiClient(_recommendation_json(RecommendedAction.ESCALATE_HUMAN))
+    client = GeminiLLMClient(client=recorder)
+
+    result = client.recommend(SYSTEM_PROMPT, "trace summary")
+
+    assert isinstance(result, LLMRecommendation)
+    assert result.recommended_action is RecommendedAction.ESCALATE_HUMAN
+
+
+def test_gemini_client_raises_on_empty_output_text():
+    recorder = RecordingGeminiClient("")
+    client = GeminiLLMClient(client=recorder)
+
+    with pytest.raises(LLMUnavailableError):
+        client.recommend(SYSTEM_PROMPT, "trace summary")
+
+
+def test_gemini_client_construction_sets_timeout_in_milliseconds_and_retries(monkeypatch):
+    """The SDK's own HttpOptions.timeout is documented in milliseconds, unlike
+    every other client in this project, which takes seconds -- this is the one
+    place that conversion has to happen, so it is the one place worth pinning
+    with a test."""
+    from google import genai
+
+    from app.core.config import GEMINI_SETTINGS
+
+    captured = {}
+
+    class RecordingGenaiClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(genai, "Client", RecordingGenaiClient)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-not-real")
+
+    GeminiLLMClient()
+
+    http_options = captured["http_options"]
+    assert http_options.timeout == int(GEMINI_SETTINGS.request_timeout_seconds * 1000)
+    assert http_options.retry_options.attempts == GEMINI_SETTINGS.max_retries + 1
+
+
+# --------------------------------------------------------------------------
+# GroqLLMClient
+# --------------------------------------------------------------------------
+class RecordingGroqCompletions:
+    def __init__(self, content: str) -> None:
+        self.kwargs = None
+        self._content = content
+
+    def create(self, **kwargs):
+        self.kwargs = kwargs
+        message = SimpleNamespace(content=self._content)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
+class RecordingGroqClient:
+    def __init__(self, content: str) -> None:
+        self.chat = SimpleNamespace(completions=RecordingGroqCompletions(content))
+
+
+def test_groq_client_requests_strict_json_schema():
+    recorder = RecordingGroqClient(_recommendation_json())
+    client = GroqLLMClient(client=recorder)
+
+    client.recommend(SYSTEM_PROMPT, "trace summary for one payment")
+
+    kwargs = recorder.chat.completions.kwargs
+    response_format = kwargs["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["strict"] is True
+    assert response_format["json_schema"]["schema"] == LLMRecommendation.model_json_schema()
+    assert kwargs["messages"] == [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": "trace summary for one payment"},
+    ]
+
+
+def test_groq_client_parses_message_content_into_the_recommendation():
+    recorder = RecordingGroqClient(_recommendation_json(RecommendedAction.NO_ACTION_COOLDOWN))
+    client = GroqLLMClient(client=recorder)
+
+    result = client.recommend(SYSTEM_PROMPT, "trace summary")
+
+    assert result.recommended_action is RecommendedAction.NO_ACTION_COOLDOWN
+
+
+def test_groq_client_raises_on_non_conforming_content():
+    """Covers the documented Groq reliability gap: strict mode occasionally
+    returns free-form text instead of the schema. This client cannot detect
+    that in advance -- the contract is that it raises rather than returning
+    something that only looks like a valid recommendation."""
+    recorder = RecordingGroqClient("this is not json")
+    client = GroqLLMClient(client=recorder)
+
+    with pytest.raises(Exception):
+        client.recommend(SYSTEM_PROMPT, "trace summary")
+
+
+def test_groq_client_construction_sets_timeout_in_seconds_and_retries(monkeypatch):
+    import groq
+
+    from app.core.config import GROQ_SETTINGS
+
+    captured = {}
+
+    class RecordingGroqSDKClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(groq, "Groq", RecordingGroqSDKClient)
+    monkeypatch.setenv("GROQ_API_KEY", "test-not-real")
+
+    GroqLLMClient()
+
+    assert captured["timeout"] == GROQ_SETTINGS.request_timeout_seconds
+    assert captured["max_retries"] == GROQ_SETTINGS.max_retries
+
+
+# --------------------------------------------------------------------------
+# FallbackLLMClient
+# --------------------------------------------------------------------------
+def test_fallback_client_uses_the_primary_when_it_succeeds():
+    primary = StubLLMClient(model="primary-model")
+    fallback = StubLLMClient(model="fallback-model")
+    client = FallbackLLMClient(primary=primary, fallback=fallback)
+
+    result = client.recommend(SYSTEM_PROMPT, "trace summary")
+
+    assert result.recommended_action is RecommendedAction.RETRY_SOFT
+    assert client.model == "primary-model"
+    assert fallback.calls == []
+
+
+def test_fallback_client_falls_back_on_a_primary_failure():
+    class BrokenClient:
+        model = "broken-primary"
+
+        def recommend(self, system_prompt, user_content):
+            raise RuntimeError("primary provider unreachable")
+
+    fallback = StubLLMClient(model="fallback-model")
+    client = FallbackLLMClient(primary=BrokenClient(), fallback=fallback)
+
+    result = client.recommend(SYSTEM_PROMPT, "trace summary")
+
+    assert result.recommended_action is RecommendedAction.RETRY_SOFT
+    assert client.model == "fallback-model"
+    assert len(fallback.calls) == 1
+
+
+def test_fallback_client_does_not_catch_a_fallback_failure():
+    """Only the primary's failure is caught -- a fallback failure propagates
+    normally, so IntelligenceLayer's own fail-safe handles it exactly like a
+    single-provider failure. This class adds one extra chance, not a retry
+    loop with no bottom."""
+
+    class BrokenClient:
+        model = "broken"
+
+        def recommend(self, system_prompt, user_content):
+            raise RuntimeError("unreachable")
+
+    client = FallbackLLMClient(primary=BrokenClient(), fallback=BrokenClient())
+
+    with pytest.raises(RuntimeError):
+        client.recommend(SYSTEM_PROMPT, "trace summary")
+
+
+def test_fallback_client_model_reports_the_backend_that_actually_answered():
+    """IntelligenceLayer reads .model immediately after recommend() returns,
+    so it must reflect whichever backend produced this specific decision, not
+    always the primary -- reporting the primary's name for an answer the
+    fallback gave would misattribute it in the audit trail."""
+    primary = StubLLMClient(model="primary-model")
+    fallback = StubLLMClient(model="fallback-model")
+    layer = IntelligenceLayer(llm_client=FallbackLLMClient(primary=primary, fallback=fallback))
+
+    layer.recommend(make_input())
+    decision = layer.recommend(make_input())
+
+    assert decision.model == "primary-model"
+
+
+def test_default_gemini_and_groq_models_are_current():
+    assert DEFAULT_GEMINI_MODEL == "gemini-3.7-flash"
+    assert DEFAULT_GROQ_MODEL == "openai/gpt-oss-120b"
 
 
 # --------------------------------------------------------------------------

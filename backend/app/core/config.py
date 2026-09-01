@@ -9,8 +9,17 @@ gateway behaviour.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
+from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field
+
+# Anchored to the repository root rather than the process working directory,
+# for the same reason DEFAULT_RESULTS_PATH in orchestrator.py is: uvicorn is
+# normally started from backend/, where a relative .env would resolve to a
+# path that does not exist and every key would silently read as unset.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+load_dotenv(_REPO_ROOT / ".env")
 
 #: Values that mean "off" for a boolean operational env var. Everything else
 #: non-empty means "on" -- including typos, which is the safer direction for
@@ -69,7 +78,7 @@ class GatewaySettings(BaseModel):
 GATEWAY_SETTINGS = GatewaySettings()
 
 
-class IntelligenceSettings(BaseModel):
+class AnthropicSettings(BaseModel):
     """Settings for the Anthropic model client."""
 
     model_config = ConfigDict(extra="forbid")
@@ -81,4 +90,34 @@ class IntelligenceSettings(BaseModel):
     max_retries: int = Field(default=2, ge=0)
 
 
-INTELLIGENCE_SETTINGS = IntelligenceSettings()
+ANTHROPIC_SETTINGS = AnthropicSettings()
+
+
+class GeminiSettings(BaseModel):
+    """Settings for the Gemini model client."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Same reasoning as AnthropicSettings above. Kept in seconds like every
+    # other timeout in this file, even though the Gemini SDK's own
+    # HttpOptions.timeout takes milliseconds -- the conversion happens once,
+    # at the call site in llm_client.py, so nothing reading this file has to
+    # remember which unit a given field is in.
+    request_timeout_seconds: float = Field(default=30.0, gt=0.0)
+    max_retries: int = Field(default=2, ge=0)
+
+
+GEMINI_SETTINGS = GeminiSettings()
+
+
+class GroqSettings(BaseModel):
+    """Settings for the Groq model client, used as the fallback when Gemini
+    is unavailable or errors."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_timeout_seconds: float = Field(default=30.0, gt=0.0)
+    max_retries: int = Field(default=2, ge=0)
+
+
+GROQ_SETTINGS = GroqSettings()
