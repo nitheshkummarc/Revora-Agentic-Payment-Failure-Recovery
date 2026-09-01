@@ -85,33 +85,35 @@ All eight components are built.
 | Mock payment gateway + fault injection | 37 |
 | State resolver | 28 |
 | Failure propagation tracer | 22 |
-| Recommendation layer | 74 |
+| Recommendation layer | 87 |
 | Policy engine | 70 |
 | Orchestrator + verify | 29 |
 | API / CORS scoping | 9 |
 | Synthetic dataset generator | 53 |
 | X-Ray dashboard | 79 |
 
-**325 backend + 79 frontend = 404 tests passing**, plus 17 that are skipped by
+**343 backend + 79 frontend = 422 tests passing**, plus 17 that are skipped by
 default — see below.
 
 ### What is not covered
 
-A further 17 tests exercise prompt injection against the **real** model rather
-than the offline stub. They skip unless `ANTHROPIC_API_KEY` is set, and they
-skip loudly: a green suite without a key is not evidence they passed. No key
-has been available in any session this project has been built or audited in,
-so these have never run.
+`test_intelligence_live_api.py` (17 tests) exercises prompt injection against a
+**real** Anthropic model rather than the offline stub. It skips unless
+`ANTHROPIC_API_KEY` is set, and skips loudly: a green suite without a key is
+not evidence it passed. No Anthropic key has been available in any session this
+project has been built or audited in, so this file has never run.
 
 ```bash
 ANTHROPIC_API_KEY=... python -m pytest backend/tests/test_intelligence_live_api.py -v
 ```
 
-Until that runs, every claim about injection resistance rests on the
-deterministic guard, which is tested against a stub rigged to comply with
-every injection case. That is a real property of the guard itself. It is not
-the same claim as "the model resists injection" — that claim is currently
-untested, not merely unproven, and the two must not be conflated.
+This file predates the Gemini/Groq clients and only exercises Anthropic; it
+does not yet cover the default provider. Until either runs, every claim about
+injection resistance rests on the deterministic guard, which is tested against
+a stub rigged to comply with every injection case. That is a real property of
+the guard itself. It is not the same claim as "the model resists injection" —
+that claim is currently untested, not merely unproven, and the two must not be
+conflated.
 
 ## Results
 
@@ -287,13 +289,14 @@ and escalating instead.
 
 ```bash
 pip install -r backend/requirements.txt
-python -m pytest -q                                # 325 passed, 17 skipped
+python -m pytest -q                                # 343 passed, 17 skipped
 uvicorn app.main:app --reload --app-dir backend    # http://localhost:8000
 ```
 
-Set `ANTHROPIC_API_KEY` to enable live recommendation calls. Without it the
-recommendation layer runs against a deterministic stub, and every other layer
-is unaffected.
+Copy `.env.example` to `.env` and fill in what you have — see the
+[Configuration](#configuration) table below for the full list and the
+selection order. With none set, the recommendation layer runs against a
+deterministic stub, and every other layer is unaffected.
 
 ### Generating a batch run
 
@@ -360,9 +363,21 @@ frontend/src/                react dashboard, read-only
 
 ## Configuration
 
+Copy `.env.example` to `.env` and fill in what you have — it is read
+automatically (`python-dotenv`, wired in `core/config.py`), and a real
+exported environment variable always takes precedence over the file.
+
+**Model client selection order:** Gemini (with Groq as an automatic fallback
+if both keys below are set) → Groq alone → Anthropic → the offline stub, each
+gated on its own key. Gemini is checked first because it is free-tier and
+gives the same schema-validated structured-output guarantee the paid Anthropic
+API does.
+
 | Variable | Default | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | unset | Enables live model calls. Without it the recommendation layer uses a deterministic stub and every other layer is unaffected. |
+| `GEMINI_API_KEY` | unset | Default model provider. Free tier at [ai.google.dev](https://ai.google.dev). `GOOGLE_API_KEY` also works if that is what you already have set. |
+| `GROQ_API_KEY` | unset | Fallback provider (GPT-OSS-120B), used automatically if `GEMINI_API_KEY` fails or errors, or alone if only this key is set. Free tier at [console.groq.com](https://console.groq.com). |
+| `ANTHROPIC_API_KEY` | unset | Only read if neither key above is set. Paid; `AnthropicLLMClient` is unchanged and still available for anyone who already has a key. |
 | `REVORA_CORS_ORIGINS` | the four localhost dev/preview origins | Comma-separated origins allowed to read the API. Scoped rather than `*`, since nothing here needs to be readable by any page on the internet. |
 | `REVORA_DISABLE_LLM` | off | Operational kill switch: forces the same fail-safe escalation as a missing client, without touching how the layer is wired. Recognises `""`/`0`/`false`/`no`/`off` (case-insensitive) as off; anything else is on. |
 | `REVORA_DISABLED_RULES` | unset | Comma-separated `RuleId` names to skip in the policy engine's value-rule checks, for turning off a threshold fast during a live demo. Cannot reach the opt-out or missing-RBI-field gates -- they aren't in the disablable list. An unrecognised name is logged separately rather than silently accepted. |
