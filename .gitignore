@@ -18,6 +18,7 @@ GROUND_TRUTH.md
 # Secrets -- never commit any of these.
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 *.p12
