@@ -483,6 +483,16 @@ class IntelligenceLayer:
         # 5. Grounding guard. A money-moving action must be backed by a real
         #    error object, not just a model's say-so.
         #
+        #    SCOPE, STATED PRECISELY: this checks only that
+        #    request.trace.grounded_error is not None -- i.e. that the tracer
+        #    supplied AN error object at all. It does not verify any
+        #    individual claim in `reasoning` against that object or against
+        #    the note; a model could still write something the trace never
+        #    established (e.g. "customer requested a refund") and this guard
+        #    would not catch it. "Grounded" here means "backed by a real
+        #    error object", not "every sentence in the reasoning is true" --
+        #    do not read it as the stronger claim.
+        #
         #    UNREACHABLE ON THE NORMAL PIPELINE -- a backstop, not an
         #    independently exercised rule. The tracer sets ambiguous=True
         #    whenever a FAILED payment has no grounded error object

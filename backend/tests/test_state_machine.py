@@ -324,6 +324,39 @@ def test_illegal_transition_is_ignored_and_flagged(resolver: StateResolver):
     assert result.resolution_confidence < 1.0
 
 
+def test_retry_authorization_arriving_after_capture_is_ignored(resolver: StateResolver):
+    """A late/duplicate `payment.authorized` arriving after the payment is
+    already CAPTURED must not walk state backwards -- CAPTURED is not in
+    PAYMENT_AUTHORIZED's legal-predecessor set, so this is the same
+    illegal-transition guard as test_illegal_transition_is_ignored_and_flagged,
+    exercised on a terminal-state retry rather than an out-of-order capture."""
+    events = [
+        make_event(WebhookEventName.PAYMENT_AUTHORIZED, sequence=1, occurred_offset=10),
+        make_event(WebhookEventName.PAYMENT_CAPTURED, sequence=2, occurred_offset=20),
+        make_event(WebhookEventName.PAYMENT_AUTHORIZED, sequence=3, occurred_offset=30),
+    ]
+    result = resolver.resolve(events, created_at=START, observed_at=START + timedelta(seconds=40))
+    assert result.state is CanonicalState.CAPTURED
+    assert result.ignored_event_ids == ["evt_pay_1_3"]
+    assert result.resolution_reason is ResolutionRule.INCONSISTENT_EVENT_CHAIN
+
+
+def test_duplicate_refund_after_reversed_is_ignored(resolver: StateResolver):
+    """A second `refund.created` for the same payment must not be treated as
+    a second reversal -- REFUND_CREATED is legal only from CAPTURED, and the
+    payment is already REVERSED by the time the duplicate arrives."""
+    events = [
+        make_event(WebhookEventName.PAYMENT_AUTHORIZED, sequence=1, occurred_offset=10),
+        make_event(WebhookEventName.PAYMENT_CAPTURED, sequence=2, occurred_offset=20),
+        make_event(WebhookEventName.REFUND_CREATED, sequence=3, occurred_offset=30),
+        make_event(WebhookEventName.REFUND_CREATED, sequence=4, occurred_offset=40),
+    ]
+    result = resolver.resolve(events, created_at=START, observed_at=START + timedelta(seconds=50))
+    assert result.state is CanonicalState.REVERSED
+    assert result.ignored_event_ids == ["evt_pay_1_4"]
+    assert result.resolution_reason is ResolutionRule.INCONSISTENT_EVENT_CHAIN
+
+
 def test_lone_capture_with_no_authorization_is_not_called_clean(resolver: StateResolver):
     """Regression: a single unreachable event must not be reported as
     `clean_single_event` just because there is only one of it."""

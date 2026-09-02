@@ -877,6 +877,19 @@ class MockPaymentGateway:
         """Wipe all state. Used between tests and demo runs."""
         self.__init__(self.settings, self._clock)  # noqa: PLC2801
 
+    @_locked
+    def reset_circuit(self) -> None:
+        """Close the delivery circuit breaker under the gateway's own lock.
+
+        `delivery_client.reset_circuit()` is only safe today when reached
+        through `_deliver`/`settle`/`_emit`, all of which are `@_locked` --
+        `delivery_client` has no lock of its own. Calling that method
+        directly (as a demo operator resetting a tripped breaker between
+        runs would) bypasses the gateway's RLock entirely if it races a
+        concurrent in-flight request. This wrapper is the safe entry point.
+        """
+        self.delivery_client.reset_circuit()
+
 
 class EntityNotFoundError(LookupError):
     """Requested payment/subscription does not exist in the in-memory store."""

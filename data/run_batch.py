@@ -135,7 +135,7 @@ def apply_step(gateway: MockPaymentGateway, step: Dict[str, Any]) -> None:
         raise ValueError(f"unknown gateway seed op: {op!r}")
 
 
-def _select_llm_client() -> LLMClient:
+def _select_llm_client(force_stub: bool = False) -> LLMClient:
     """Gemini (+ Groq fallback if both keys present), then Groq alone, then
     Anthropic, then the offline stub -- each gated on its own API key.
 
@@ -144,7 +144,17 @@ def _select_llm_client() -> LLMClient:
     canned output. Gemini is checked first because it is free-tier and gives
     the same schema-validated structured-output guarantee Anthropic's paid
     API does; Anthropic stays available for anyone who already has a key.
+
+    `force_stub` overrides all of the above. Without it, adding a real API
+    key to the environment silently changes what this script measures -- the
+    documented deterministic baseline (headline batch numbers, reproducibility
+    claims) was generated with the stub, and there was previously no way to
+    reproduce that baseline once a real key was present, short of unsetting
+    it.
     """
+    if force_stub:
+        print("Model: StubLLMClient (--stub passed; ignoring any API keys present)")
+        return StubLLMClient()
     gemini_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     groq_key = os.environ.get("GROQ_API_KEY")
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -165,7 +175,9 @@ def _select_llm_client() -> LLMClient:
     return StubLLMClient()
 
 
-def seed_and_run(dataset: Dict[str, Any], failure_rate: float) -> BatchResults:
+def seed_and_run(
+    dataset: Dict[str, Any], failure_rate: float, force_stub: bool = False
+) -> BatchResults:
     reference = datetime.fromisoformat(dataset["batch_reference_time"])
     seed_at = reference - timedelta(seconds=dataset["seed_offset_seconds"])
 
@@ -195,7 +207,7 @@ def seed_and_run(dataset: Dict[str, Any], failure_rate: float) -> BatchResults:
 
     orchestrator = AgentOrchestrator(
         gateway=gateway,
-        intelligence=IntelligenceLayer(llm_client=_select_llm_client(), clock=clock),
+        intelligence=IntelligenceLayer(llm_client=_select_llm_client(force_stub), clock=clock),
         clock=clock,
         results_path=RESULTS_PATH,
     )
@@ -316,10 +328,20 @@ def main() -> None:
         default=GatewaySettings().webhook_delivery_failure_rate,
         help="simulated webhook delivery failure rate",
     )
+    parser.add_argument(
+        "--stub",
+        action="store_true",
+        help=(
+            "force the offline StubLLMClient regardless of any API key present "
+            "in the environment -- reproduces the documented deterministic "
+            "baseline even when GEMINI_API_KEY/GROQ_API_KEY/ANTHROPIC_API_KEY "
+            "are set"
+        ),
+    )
     args = parser.parse_args()
 
     dataset = json.loads(args.dataset.read_text(encoding="utf-8"))
-    results = seed_and_run(dataset, args.failure_rate)
+    results = seed_and_run(dataset, args.failure_rate, force_stub=args.stub)
     report(results, dataset)
 
 

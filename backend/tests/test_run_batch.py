@@ -99,12 +99,29 @@ def test_falls_back_to_stub_client_when_no_key_present(run_batch):
     assert isinstance(client, StubLLMClient)
 
 
-def test_seed_and_run_twice_in_one_process_is_reproducible(run_batch):
+def test_force_stub_overrides_any_key_present(run_batch, monkeypatch):
+    """Adding a real key to the environment must not silently change what
+    `python data/run_batch.py --stub` measures -- the documented deterministic
+    baseline has to stay reproducible on demand, key or no key."""
+    monkeypatch.setenv("GEMINI_API_KEY", "test-not-real")
+    monkeypatch.setenv("GROQ_API_KEY", "test-not-real")
+    client = run_batch._select_llm_client(force_stub=True)
+    assert isinstance(client, StubLLMClient)
+
+
+def test_seed_and_run_twice_in_one_process_is_reproducible(run_batch, monkeypatch, tmp_path):
     """seed_and_run() constructs its own gateway per call rather than reaching
     into any process-wide singleton, so two calls in the same process must not
-    interfere with each other's RNG stream or circuit-breaker state."""
+    interfere with each other's RNG stream or circuit-breaker state.
+
+    seed_and_run() persists to the module-level RESULTS_PATH on every call --
+    that is its real job when run as a script, but here it pointed at the real
+    data/batch_results.json (the file the dashboard reads), so running this
+    test silently rewrote the repo's committed batch data as a side effect.
+    Redirected to a throwaway path so the test can't touch real repo state."""
     import json
 
+    monkeypatch.setattr(run_batch, "RESULTS_PATH", tmp_path / "batch_results.json")
     dataset = json.loads(run_batch.DATASET_PATH.read_text(encoding="utf-8"))
 
     first = run_batch.seed_and_run(dataset, failure_rate=0.05)

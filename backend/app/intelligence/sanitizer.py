@@ -75,6 +75,14 @@ INJECTION_PATTERNS: List[Tuple[str, str]] = [
     ("delimiter_escape_attempt", rf"</?\s*{UNTRUSTED_BLOCK_TAG}\s*>"),
     ("fake_system_tag", r"</?\s*(?:system|instructions?|admin|assistant)\s*>"),
     ("privilege_escalation", r"\b(?:developer|debug|god)\s+mode\b|\bDAN\b|\bsudo\b"),
+    (
+        "fake_authority_preamble",
+        r"\b(?:system|admin|developer)\s*(?:message|note|instruction)\b\s*:",
+    ),
+    (
+        "disregard_evidence_directive",
+        r"\bregardless\s+of\s+(?:the\s+)?(?:trace|evidence|tracer|data|facts)\b",
+    ),
 ]
 
 _COMPILED_PATTERNS = [

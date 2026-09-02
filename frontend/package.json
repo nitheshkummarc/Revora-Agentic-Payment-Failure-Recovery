@@ -10,9 +10,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "sync-data": "node scripts/sync-data.mjs",
+    "check-dist-fresh": "node scripts/check-dist-fresh.mjs",
     "predev": "npm run sync-data",
     "prebuild": "npm run sync-data",
     "pretest": "npm run sync-data",
+    "prepreview": "npm run check-dist-fresh",
     "test:live": "vitest run --config vitest.live.config.ts"
   },
   "dependencies": {

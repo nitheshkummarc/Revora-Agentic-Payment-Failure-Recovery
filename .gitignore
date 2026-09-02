@@ -37,3 +37,4 @@ frontend/tsconfig.tsbuildinfo
 # Coverage and benchmark byproducts
 .coverage
 data/baseline_revora_run.json
+Revora_Field_Guide.md

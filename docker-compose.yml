@@ -1,5 +1,6 @@
 # Single FastAPI process with in-memory state. No database, no message queue,
-# no service split. A frontend service is added alongside the dashboard.
+# no service split. Only the backend is containerised here; the frontend
+# (frontend/) runs separately via `npm run dev`/`npm run build` — see README.
 services:
   backend:
     image: python:3.11-slim

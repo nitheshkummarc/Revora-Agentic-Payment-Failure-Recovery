@@ -727,6 +727,27 @@ def test_circuit_closes_itself_once_the_cooldown_elapses(clock: FakeClock):
     assert client.consecutive_failures == 0
 
 
+def test_gateway_reset_circuit_closes_the_breaker_under_its_own_lock(clock: FakeClock):
+    """`delivery_client.reset_circuit()` has no lock of its own -- it is only
+    safe today when reached through a `@_locked` gateway method. This is the
+    safe entry point for a demo operator resetting a tripped breaker between
+    runs, rather than reaching into `gateway.delivery_client` directly."""
+    settings = GatewaySettings(
+        webhook_delivery_failure_rate=1.0,
+        delivery_max_attempts=1,
+        circuit_breaker_threshold=1,
+    )
+    gateway = MockPaymentGateway(settings=settings, clock=clock)
+    _create(gateway)
+    gateway.fail_payment(FailPaymentRequest(payment_id="pay_test_1"))
+    assert gateway.delivery_client.circuit_open is True
+
+    gateway.reset_circuit()
+
+    assert gateway.delivery_client.circuit_open is False
+    assert gateway.delivery_client.consecutive_failures == 0
+
+
 def test_concurrent_captures_of_the_same_payment_only_one_succeeds(
     clock: FakeClock, monkeypatch
 ):
