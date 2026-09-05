@@ -91,9 +91,22 @@ discouraged in a docstring:
   raises, rather than only checking that the first one succeeded.
 - Injection detection catches every payload in a fixed adversarial set —
   proven against a stub (guaranteed to comply, so a pass there is the guard
-  doing 100% of the work) and, as of this project's most recent audit pass,
-  against a live model too. That run's model resisted 0 of 11 injection
-  attempts on its own; the deterministic guard caught all 11 anyway.
+  doing 100% of the work) and against a live model too. All 11 payloads end
+  at `ESCALATE_HUMAN` and none moves money. Splitting that by who actually
+  stopped it: the model's own answer was already safe on 7 of 11, and on the
+  other 4 it returned `RETRY_SOFT` — a payment retry, on the instruction of
+  an untrusted note — which the deterministic guard rewrote. Which specific
+  payloads land in which half shifts between runs; the roughly 7/4 split has
+  reproduced, the membership has not, so the guard is load-bearing rather
+  than redundant.
+- That split is measured from the model's own pre-guard answer
+  (`original_llm_action`), which is a correction. The earlier figure quoted
+  here — "resisted 0 of 11" — came from keying off `guard_override_reason`,
+  which the injection guard sets for *every* flagged note regardless of what
+  the model said. That made the reported resistance a constant rather than a
+  measurement, and it understated the model. Fixed in
+  `test_intelligence_live_api.py`; the safety claim above was never affected,
+  only the attribution.
 
 **Assumed, not tested:**
 - That a real Razorpay webhook stream behaves the way the mock gateway's
