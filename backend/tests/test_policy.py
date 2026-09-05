@@ -124,7 +124,7 @@ def test_an_event_stating_no_mandate_category_uses_the_general_threshold(engine)
 # --------------------------------------------------------------------------
 # SIP / insurance AFA threshold (Rs.1 lakh)
 # --------------------------------------------------------------------------
-@pytest.mark.parametrize("category", ["sip", "insurance"])
+@pytest.mark.parametrize("category", ["sip", "insurance", "credit_card"])
 def test_sip_or_insurance_under_one_lakh_needs_no_afa(engine, category):
     """Rs.20,000 is over the general threshold but under the Rs.1 lakh one that
     applies to these mandates, so no additional factor is required."""
@@ -142,7 +142,7 @@ def test_sip_or_insurance_under_one_lakh_needs_no_afa(engine, category):
     assert decision.final_action is RecommendedAction.RETRY_SOFT
 
 
-@pytest.mark.parametrize("category", ["sip", "insurance"])
+@pytest.mark.parametrize("category", ["sip", "insurance", "credit_card"])
 def test_sip_or_insurance_over_one_lakh_is_blocked_without_afa(engine, category):
     decision = engine.validate(
         llm(),
@@ -162,7 +162,7 @@ def test_sip_or_insurance_over_one_lakh_is_blocked_without_afa(engine, category)
     assert R.RBI_CIRCULAR in decision.blocked_reason
 
 
-@pytest.mark.parametrize("category", ["sip", "insurance"])
+@pytest.mark.parametrize("category", ["sip", "insurance", "credit_card"])
 def test_sip_or_insurance_over_one_lakh_passes_when_afa_is_present(engine, category):
     decision = engine.validate(
         llm(),
@@ -254,7 +254,7 @@ def test_the_sip_threshold_is_strictly_above_like_the_general_one(engine):
 def test_the_two_afa_rules_are_mutually_exclusive(engine):
     """Each returns early on the categories the other owns, so no event can be
     blocked by both -- and the audit always shows which threshold was applied."""
-    for category in (None, "utility", "sip", "insurance"):
+    for category in (None, "utility", "sip", "insurance", "credit_card"):
         decision = engine.validate(
             llm(),
             context(
@@ -268,7 +268,7 @@ def test_the_two_afa_rules_are_mutually_exclusive(engine):
         assert len(failed) == 1, (category, failed)
         expected = (
             "AFA_SIP_INSURANCE_REQUIRED_AND_MISSING"
-            if category in ("sip", "insurance")
+            if category in ("sip", "insurance", "credit_card")
             else "AFA_REQUIRED_AND_MISSING"
         )
         assert failed == [expected]
@@ -277,6 +277,8 @@ def test_the_two_afa_rules_are_mutually_exclusive(engine):
 def test_the_reported_threshold_matches_the_one_enforced(engine):
     assert R.afa_threshold_paise("sip") == R.AFA_REQUIRED_ABOVE_SIP_INSURANCE_PAISE
     assert R.afa_threshold_paise("insurance") == R.AFA_REQUIRED_ABOVE_SIP_INSURANCE_PAISE
+    # The third category the circular names, alongside mutual funds and insurance.
+    assert R.afa_threshold_paise("credit_card") == R.AFA_REQUIRED_ABOVE_SIP_INSURANCE_PAISE
     assert R.afa_threshold_paise(None) == R.AFA_REQUIRED_ABOVE_PAISE
     assert R.afa_threshold_paise("utility") == R.AFA_REQUIRED_ABOVE_PAISE
     # Rs.1 lakh in paise, stated once so a unit slip is visible here.
@@ -543,9 +545,10 @@ def test_opted_out_is_a_permanent_hard_block(engine):
     assert decision.approved is False
     assert decision.rule_id == "CUSTOMER_OPTED_OUT"
     assert decision.blocked_reason == (
-        "CUSTOMER_OPTED_OUT: customer has opted out; cooldown is 'permanent', so "
-        "RETRY_SOFT is blocked with no override, regardless of any other field "
-        "[RBI/DPSS/2026-27/396]"
+        "CUSTOMER_OPTED_OUT: customer has opted out, so RETRY_SOFT is blocked "
+        "with no override, regardless of any other field; Revora applies a "
+        "'permanent' cooldown, which is its own choice, not a duration the "
+        "circular sets [RBI/DPSS/2026-27/396]"
     )
     assert decision.final_action is RecommendedAction.NO_ACTION_COOLDOWN
 

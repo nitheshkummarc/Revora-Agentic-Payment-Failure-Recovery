@@ -43,9 +43,10 @@ MAX_DISCOUNT_PAISE = MAX_DISCOUNT * PAISE_PER_RUPEE  # 50_000 paise
 AFA_REQUIRED_ABOVE_PAISE = AFA_REQUIRED_ABOVE * PAISE_PER_RUPEE  # 1_500_000 paise
 
 # --------------------------------------------------------------------------
-# The circular sets AFA thresholds of Rs.15,000 generally and Rs.1 lakh for
-# SIPs and insurance. Both are now enforced, against the mandate category the
-# event carries.
+# The circular sets AFA thresholds of Rs.15,000 generally, and Rs.1 lakh for
+# the three categories it names: mutual fund subscriptions, insurance premiums
+# and credit card bill payments. Both thresholds are enforced, against the
+# mandate category the event carries.
 #
 # The higher threshold is a relaxation, not a tightening: a SIP mandate between
 # Rs.15,000 and Rs.1 lakh needs no additional factor where a general mandate
@@ -58,9 +59,16 @@ AFA_REQUIRED_ABOVE_SIP_INSURANCE_PAISE = (
     AFA_REQUIRED_ABOVE_SIP_INSURANCE * PAISE_PER_RUPEE
 )  # 10_000_000 paise
 
-#: Mandate categories the circular's higher threshold applies to. Anything else
-#: -- including no category at all -- uses the general threshold.
-SIP_INSURANCE_MANDATE_CATEGORIES = frozenset({"sip", "insurance"})
+#: Mandate categories the circular's higher threshold applies to. The circular
+#: names three: subscription to mutual funds (carried here as `sip`, the common
+#: term for a mutual-fund instalment mandate), insurance premiums, and credit
+#: card bill payments. Anything else -- including no category at all -- uses the
+#: general threshold.
+#:
+#: The rule id and constant names below retain the SIP/insurance wording they
+#: were introduced with; renaming them would change a value the dataset and the
+#: committed batch results both key on, for no gain in what is enforced.
+SIP_INSURANCE_MANDATE_CATEGORIES = frozenset({"sip", "insurance", "credit_card"})
 
 
 def afa_threshold_paise(mandate_category: Optional[str]) -> int:
@@ -133,7 +141,7 @@ class RuleId(str, Enum):
     PRE_DEBIT_NOTICE_TOO_RECENT = "PRE_DEBIT_NOTICE_TOO_RECENT"
     MANDATE_CEILING_EXCEEDED = "MANDATE_CEILING_EXCEEDED"
     AFA_REQUIRED_AND_MISSING = "AFA_REQUIRED_AND_MISSING"
-    # The circular's higher threshold for SIP and insurance mandates. Kept as a
+    # The circular's higher threshold for the categories it names. Kept as a
     # rule of its own rather than folded into the one above, so an audit shows
     # which threshold was applied and why.
     AFA_SIP_INSURANCE_REQUIRED_AND_MISSING = "AFA_SIP_INSURANCE_REQUIRED_AND_MISSING"
@@ -180,12 +188,20 @@ def _rupees(paise: int) -> str:
 def check_opted_out(
     opted_out: bool, recommended_action: RecommendedAction
 ) -> Optional[Violation]:
-    """Permanent cooldown for opted-out customers, with no override.
+    """Block recovery actions for a customer who has opted out.
 
     Scope is governed by OPT_OUT_BLOCKED_ACTIONS: the block covers every action
     that would continue the recovery workflow, and permits the two that end it
     without touching the customer. Within its scope there is no override -- no
     combination of other fields can rescue a blocked action.
+
+    Attribution, kept precise because the two halves have different authority.
+    The circular requires that a customer be given a facility to opt out of a
+    transaction or the e-mandate, so honouring an opt-out is a regulatory
+    obligation and the block cites the circular. It does not prescribe how long
+    the opt-out holds; COOLDOWN_AFTER_OPT_OUT = "permanent" is Revora's own
+    choice about how to honour it, so the detail text names it as such rather
+    than letting the citation imply the circular set it.
     """
     if not opted_out:
         return None
@@ -194,9 +210,10 @@ def check_opted_out(
     return Violation(
         rule_id=RuleId.CUSTOMER_OPTED_OUT,
         detail=(
-            f"customer has opted out; cooldown is '{COOLDOWN_AFTER_OPT_OUT}', so "
-            f"{recommended_action.value} is blocked with no override, regardless "
-            "of any other field"
+            f"customer has opted out, so {recommended_action.value} is blocked "
+            "with no override, regardless of any other field; Revora applies a "
+            f"'{COOLDOWN_AFTER_OPT_OUT}' cooldown, which is its own choice, not "
+            "a duration the circular sets"
         ),
         final_action=RecommendedAction.NO_ACTION_COOLDOWN,
         cites_rbi=True,
@@ -309,10 +326,10 @@ def check_afa(
     """AFA_REQUIRED_ABOVE = 15000 Rs -- strictly above the threshold, an
     action needs afa_flag = true, else auto-block.
 
-    SIP and insurance mandates are handed to `check_afa_sip_insurance`, which
-    applies the circular's higher threshold to them. Every other mandate, and
-    every event that states no category at all, is evaluated here exactly as
-    before -- the default argument keeps existing callers unchanged.
+    The three categories the circular gives a higher threshold are handed to
+    `check_afa_sip_insurance`. Every other mandate, and every event that states
+    no category at all, is evaluated here exactly as before -- the default
+    argument keeps existing callers unchanged.
     """
     if is_sip_or_insurance(mandate_category):
         return None
@@ -343,8 +360,9 @@ def is_sip_or_insurance(mandate_category: Optional[str]) -> bool:
 def check_afa_sip_insurance(
     amount_paise: int, afa_flag: bool, mandate_category: Optional[str]
 ) -> Optional[Violation]:
-    """AFA_REQUIRED_ABOVE_SIP_INSURANCE = 1 lakh Rs, for SIP and insurance
-    mandates only.
+    """AFA_REQUIRED_ABOVE_SIP_INSURANCE = 1 lakh Rs, for the three mandate
+    categories the circular names: mutual fund subscriptions, insurance
+    premiums and credit card bill payments.
 
     A relaxation of the general rule, not an addition to it: between Rs.15,000
     and Rs.1 lakh one of these mandates needs no additional factor where any

@@ -72,6 +72,22 @@ discouraged in a docstring:
   The recommendation layer has no gateway import at all — there is no code
   path by which its output could execute directly.
 
+Two supplementary documents go a level deeper, for a reviewer who wants the
+detail without reading the source:
+
+- **[`docs/architecture.md`](docs/architecture.md)** — what each of the six
+  backend modules owns and deliberately does not own, the schema-level
+  mechanism that enforces the two boundaries above, a stage-by-stage trace of
+  one event through the pipeline, and the fail-closed behaviour of every stage.
+- **[`docs/methodology.md`](docs/methodology.md)** — how the 500-event dataset
+  was generated and what its bucket split is actually for, why the headline
+  batch runs against a stub while the live tests exist to prove something
+  different, how correctness was graded, and what would have to change to
+  evaluate any of this against a real payment stream.
+
+Both are supplementary. This file stays authoritative on every figure, and
+neither document introduces a number that is not already stated here.
+
 ## What makes this honest
 
 **Proven by tests, not just claimed:**
@@ -89,6 +105,21 @@ discouraged in a docstring:
 - Double-capture, illegal-transition, and duplicate-refund are structurally
   refused — direct tests capture a payment twice and assert the second call
   raises, rather than only checking that the first one succeeded.
+- Every regulatory threshold was checked against the text of the circular it
+  cites, not against a paraphrase of it. The 24-hour pre-debit notice, the
+  ₹15,000 general AFA threshold, the ₹1 lakh threshold for the three mandate
+  categories the circular names (mutual-fund subscriptions, insurance
+  premiums, credit card bill payments), and the customer-set variable-mandate
+  ceiling each match RBI/DPSS/2026-27/396 — including the boundary, where the
+  circular permits "up to ₹15,000" without AFA and the code lets exactly
+  ₹15,000 through.
+- Limits that are *not* regulatory do not cite the circular. `MAX_DISCOUNT`
+  (a business cap) and `MAX_RETRIES` (Razorpay's own subscription-halt
+  threshold) block without invoking it, the minimum-trace-confidence constant
+  is commented as having no regulatory basis, and the opt-out block cites the
+  circular for the obligation while naming the permanent cooldown as Revora's
+  own choice rather than a duration the circular sets. No section numbers are
+  claimed anywhere, because none were verified against the source text.
 - Injection detection catches every payload in a fixed adversarial set —
   proven against a stub (guaranteed to comply, so a pass there is the guard
   doing 100% of the work) and against a live model too. All 11 payloads end
@@ -162,14 +193,14 @@ All eight components are built.
 | State resolver | 30 |
 | Failure propagation tracer | 22 |
 | Recommendation layer | 84 |
-| Policy engine | 70 |
+| Policy engine | 73 |
 | Orchestrator + verify | 29 |
 | Batch runner (client selection, reproducibility) | 8 |
 | API / CORS scoping | 9 |
 | Synthetic dataset generator | 53 |
 | X-Ray dashboard | 79 |
 
-**343 backend + 79 frontend = 422 tests passing**, plus 18 that are skipped by
+**346 backend + 79 frontend = 425 tests passing**, plus 18 that are skipped by
 default — see below. Every count in this table came from running the
 corresponding test file directly (`pytest -q backend/tests/test_<name>.py`)
 and reading its own summary line, not from a shared total divided up by hand.
@@ -329,7 +360,7 @@ resolving to `PENDING_WEBHOOK` and escalating instead of landing in
 
 ```bash
 pip install -r backend/requirements.txt
-python -m pytest -q                                # 343 passed, 18 skipped (no key); 361 passed (with a key)
+python -m pytest -q                                # 346 passed, 18 skipped (no key); 364 passed (with a key)
 uvicorn app.main:app --reload --app-dir backend    # http://localhost:8000
 ```
 
@@ -394,7 +425,7 @@ npm run test:live     # end-to-end; needs backend on :8000 and a served dashboar
 backend/    FastAPI app: the 6 deterministic + model-driven modules and their tests
 data/       standalone dataset generator, the batch runner, and the generated JSON artifacts
 frontend/   React dashboard that renders one batch run — read-only, no write path
-docs/       narrative end-to-end verification notes (supplementary, not authoritative over this file)
+docs/       architecture and evaluation-methodology notes (supplementary, not authoritative over this file)
 ```
 
 ```
