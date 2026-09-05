@@ -78,8 +78,8 @@ class GatewaySettings(BaseModel):
 GATEWAY_SETTINGS = GatewaySettings()
 
 
-class AnthropicSettings(BaseModel):
-    """Settings for the Anthropic model client."""
+class GroqSettings(BaseModel):
+    """Settings for the Groq model client, the default provider."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -90,16 +90,17 @@ class AnthropicSettings(BaseModel):
     max_retries: int = Field(default=2, ge=0)
 
 
-ANTHROPIC_SETTINGS = AnthropicSettings()
+GROQ_SETTINGS = GroqSettings()
 
 
 class GeminiSettings(BaseModel):
-    """Settings for the Gemini model client."""
+    """Settings for the Gemini model client, used as the fallback when Groq
+    is unavailable or errors."""
 
     model_config = ConfigDict(extra="forbid")
 
-    # Same reasoning as AnthropicSettings above. Kept in seconds like every
-    # other timeout in this file, even though the Gemini SDK's own
+    # Same reasoning as GroqSettings above. Kept in seconds like every other
+    # timeout in this file, even though the Gemini SDK's own
     # HttpOptions.timeout takes milliseconds -- the conversion happens once,
     # at the call site in llm_client.py, so nothing reading this file has to
     # remember which unit a given field is in.
@@ -108,16 +109,3 @@ class GeminiSettings(BaseModel):
 
 
 GEMINI_SETTINGS = GeminiSettings()
-
-
-class GroqSettings(BaseModel):
-    """Settings for the Groq model client, used as the fallback when Gemini
-    is unavailable or errors."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    request_timeout_seconds: float = Field(default=30.0, gt=0.0)
-    max_retries: int = Field(default=2, ge=0)
-
-
-GROQ_SETTINGS = GroqSettings()

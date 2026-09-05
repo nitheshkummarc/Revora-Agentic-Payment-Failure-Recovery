@@ -1,19 +1,15 @@
+# Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
-.venv/
-venv/
-node_modules/
-dist/
-.DS_Store
+*venv/
 
-# Local-only reference and context. Kept on disk, never committed.
-#
-# GROUND_TRUTH.md is the authoritative schema/compliance reference and
-# CLAUDE.md is the build's decision log -- both are working material rather
-# than part of what the project ships.
-CLAUDE.md
-GROUND_TRUTH.md
+# Test and coverage byproducts
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.log
 
 # Secrets -- never commit any of these.
 .env
@@ -23,18 +19,22 @@ GROUND_TRUTH.md
 *.key
 *.p12
 secrets.json
-.anthropic/
-.claude/settings.local.json
 
-# Frontend build artefacts.
+# Frontend
+node_modules/
 frontend/node_modules/
+dist/
 frontend/dist/
+frontend/tsconfig.tsbuildinfo
 # Synced copy of data/batch_results.json -- produced by `npm run sync-data`,
 # never edited by hand. One source of truth for the run.
 frontend/public/batch_results.json
-frontend/tsconfig.tsbuildinfo
 
-# Coverage and benchmark byproducts
-.coverage
+# Benchmark byproduct -- regenerate with `python data/run_baseline.py`.
 data/baseline_revora_run.json
-Revora_Field_Guide.md
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -790,7 +790,8 @@ def test_policy_module_is_deterministic_and_touches_nothing_external():
     for filename in ("engine.py", "rules.py", "schemas.py"):
         source = pathlib.Path(f"backend/app/policy/{filename}").read_text(encoding="utf-8")
         for forbidden in (
-            "anthropic",
+            "groq",
+            "genai",
             "openai",
             "httpx",
             "MockPaymentGateway",

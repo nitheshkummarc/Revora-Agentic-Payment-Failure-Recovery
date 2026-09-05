@@ -10,11 +10,11 @@ and depends on the network, so it is skipped unless a model API key is set,
 and skipped loudly rather than passed vacuously -- a green run with no key must
 never be mistaken for evidence the live behaviour was checked.
 
-    GEMINI_API_KEY=... python -m pytest backend/tests/test_intelligence_live_api.py -v
+    GROQ_API_KEY=... python -m pytest backend/tests/test_intelligence_live_api.py -v
 
 The client under test is selected by `data/run_batch.py`'s own
 `_select_llm_client()` -- the exact selection logic a real batch run uses
-(Gemini with Groq fallback, Groq alone, Anthropic, in that order) -- rather
+(Groq with Gemini fallback, Groq alone, Gemini alone, in that order) -- rather
 than a client hardcoded here, so this file always exercises whichever
 provider chain is actually configured rather than one fixed choice that could
 silently drift from what production selects.
@@ -57,14 +57,14 @@ from app.tracer.schemas import TraceResult
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 RUN_BATCH_PATH = REPO_ROOT / "data" / "run_batch.py"
 
-_MODEL_KEY_ENV_VARS = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GROQ_API_KEY", "ANTHROPIC_API_KEY")
+_MODEL_KEY_ENV_VARS = ("GROQ_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY")
 
 pytestmark = pytest.mark.skipif(
     not any(os.environ.get(name) for name in _MODEL_KEY_ENV_VARS),
     reason=(
-        "No model API key is set (GEMINI_API_KEY/GOOGLE_API_KEY/GROQ_API_KEY/"
-        "ANTHROPIC_API_KEY). These are the only tests that exercise a real "
-        "model; without a key the live behaviour is UNVERIFIED, not passing."
+        "No model API key is set (GROQ_API_KEY/GEMINI_API_KEY/GOOGLE_API_KEY). "
+        "These are the only tests that exercise a real model; without a key "
+        "the live behaviour is UNVERIFIED, not passing."
     ),
 )
 
@@ -212,10 +212,10 @@ def live_layer() -> IntelligenceLayer:
     """Builds the layer around whatever `data/run_batch.py` would actually
     select right now, so a real run and this test exercise the same client.
 
-    A prior version of this fixture hardcoded AnthropicLLMClient() directly,
-    so it never covered the Gemini/Groq chain that became the default
-    provider. In practice neither version had ever run: every test in this
-    file was always skipped for lack of a key, and make_trace() below built a
+    A prior version of this fixture hardcoded one provider's client directly,
+    so it never covered the chain that was actually the configured default.
+    In practice neither version had ever run: every test in this file was
+    always skipped for lack of a key, and make_trace() below built a
     TraceResult against a schema that had since gained new required fields
     and dropped `resolution_rule` -- a ValidationError that only became
     visible once something finally un-skipped these tests.

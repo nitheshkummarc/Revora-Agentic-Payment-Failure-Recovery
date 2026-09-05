@@ -455,7 +455,7 @@ def test_tracer_module_makes_no_llm_or_gateway_calls():
     import pathlib
 
     source = pathlib.Path("backend/app/tracer/tracer.py").read_text(encoding="utf-8")
-    for forbidden in ("openai", "anthropic", "httpx", "requests", "MockPaymentGateway"):
+    for forbidden in ("groq", "genai", "openai", "httpx", "requests", "MockPaymentGateway"):
         assert forbidden not in source, f"tracer must not reference {forbidden}"
 
 

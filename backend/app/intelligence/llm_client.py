@@ -2,24 +2,19 @@
 
 Several things live here:
 
-* `GeminiLLMClient`, the default -- a thin wrapper over the Gemini Interactions
-  API using its structured-output feature, so valid JSON is guaranteed by the
-  API rather than coaxed out with a "please output JSON" instruction and a
-  regex. Runs on Gemini's free tier.
+* `GroqLLMClient`, the default -- a thin wrapper over Groq's OpenAI-compatible
+  chat completions API running GPT-OSS-120B, using strict JSON-schema
+  structured output, so valid JSON is guaranteed by the API rather than coaxed
+  out with a "please output JSON" instruction and a regex. Runs on Groq's free
+  tier.
 
-* `GroqLLMClient`, a thin wrapper over Groq's OpenAI-compatible chat
-  completions API running GPT-OSS-120B, using strict JSON-schema structured
-  output for the same guarantee. Used as the fallback when Gemini is
-  unavailable or errors.
+* `GeminiLLMClient`, a thin wrapper over the Gemini Interactions API using its
+  structured-output feature for the same guarantee. Used as the fallback when
+  Groq is unavailable or errors.
 
-* `FallbackLLMClient`, which composes the two above: tries Gemini, falls back
-  to Groq on any failure. Implements the same protocol as a single provider,
-  so `IntelligenceLayer` needs no changes to use it.
-
-* `AnthropicLLMClient`, a thin wrapper over the Anthropic Messages API using the
-  provider's own structured-output feature (`messages.parse` with a Pydantic
-  model). Kept as an explicit opt-in for anyone with a paid key; no longer the
-  default given Gemini's free tier covers the same structured-output guarantee.
+* `FallbackLLMClient`, which composes the two above: tries Groq, falls back to
+  Gemini on any failure. Implements the same protocol as a single provider, so
+  `IntelligenceLayer` needs no changes to use it.
 
 * `IntelligenceLayer`, the public entry point. It sanitises, decides whether the
   model should be consulted at all, and applies the deterministic safety guard
@@ -41,7 +36,6 @@ from datetime import datetime, timezone
 from typing import Callable, List, Optional, Protocol
 
 from app.core.config import (
-    ANTHROPIC_SETTINGS,
     GEMINI_SETTINGS,
     GROQ_SETTINGS,
     env_flag,
@@ -60,9 +54,8 @@ from app.intelligence.schemas import (
 logger = get_logger("intelligence")
 
 #: Default models for recommendation calls, one per provider.
-DEFAULT_GEMINI_MODEL = "gemini-3.7-flash"
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
-DEFAULT_ANTHROPIC_MODEL = "claude-opus-5"
+DEFAULT_GEMINI_MODEL = "gemini-3.7-flash"
 DEFAULT_MAX_TOKENS = 2048
 
 
@@ -80,81 +73,13 @@ class LLMUnavailableError(RuntimeError):
     """The provider could not be reached or returned an unusable response."""
 
 
-class AnthropicLLMClient:
-    """Anthropic Messages API client using native structured outputs."""
-
-    def __init__(
-        self,
-        model: str = DEFAULT_ANTHROPIC_MODEL,
-        max_tokens: int = DEFAULT_MAX_TOKENS,
-        api_key: Optional[str] = None,
-        client: Optional[object] = None,
-        timeout: Optional[float] = None,
-        max_retries: Optional[int] = None,
-    ) -> None:
-        self.model = model
-        self.max_tokens = max_tokens
-        if client is not None:
-            self._client = client
-            return
-        try:
-            import anthropic  # imported lazily: the rest of Revora runs without it
-        except ImportError as exc:  # pragma: no cover - depends on environment
-            raise LLMUnavailableError(
-                "the `anthropic` package is not installed; install it or pass a "
-                "different LLMClient implementation"
-            ) from exc
-        key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        client_kwargs = {
-            "timeout": timeout if timeout is not None else ANTHROPIC_SETTINGS.request_timeout_seconds,
-            "max_retries": max_retries if max_retries is not None else ANTHROPIC_SETTINGS.max_retries,
-        }
-        self._client = (
-            anthropic.Anthropic(api_key=key, **client_kwargs)
-            if key
-            else anthropic.Anthropic(**client_kwargs)
-        )
-
-    def recommend(self, system_prompt: str, user_content: str) -> LLMRecommendation:
-        # A brand-new single-message request. Nothing from any previous event is
-        # carried in -- there is deliberately no self._history to append to.
-        #
-        # The system prompt is a frozen constant sent byte-identical on every
-        # call, and the per-event content sits after it, so a cache breakpoint
-        # at the end of the system block is read by every subsequent request in
-        # a batch. Placement matters more than the marker: caching is a prefix
-        # match, so the breakpoint has to fall at the end of the shared portion.
-        #
-        # Whether it engages depends on the prompt clearing the model's minimum
-        # cacheable prefix, which is not a property of this code and is not
-        # asserted here. Read `usage.cache_read_input_tokens` on a live call to
-        # find out -- a prefix below the minimum silently does not cache.
-        response = self._client.messages.parse(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            system=[
-                {
-                    "type": "text",
-                    "text": system_prompt,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=[{"role": "user", "content": user_content}],
-            output_format=LLMRecommendation,
-        )
-        parsed = getattr(response, "parsed_output", None)
-        if not isinstance(parsed, LLMRecommendation):
-            raise LLMUnavailableError(
-                "structured output did not validate against LLMRecommendation"
-            )
-        return parsed
-
-
 class GeminiLLMClient:
     """Gemini Interactions API client using structured output.
 
-    The default provider: Gemini's free tier gives the same schema-validated
-    output guarantee Anthropic's structured output does, at no cost.
+    Used as the fallback when Groq is unavailable or errors. Its free tier
+    gives the same schema-validated output guarantee Groq's strict JSON mode
+    does, so a fallback call is not a degraded one -- only a slower path to
+    the same contract.
     """
 
     def __init__(
@@ -172,7 +97,7 @@ class GeminiLLMClient:
             self._client = client
             return
         try:
-            from google import genai  # imported lazily, like the anthropic import above
+            from google import genai  # imported lazily: the rest of Revora runs without it
             from google.genai import types
         except ImportError as exc:  # pragma: no cover - depends on environment
             raise LLMUnavailableError(
@@ -214,10 +139,14 @@ class GeminiLLMClient:
 
 class GroqLLMClient:
     """Groq chat completions client running GPT-OSS-120B, using strict
-    JSON-schema structured output for the same validation guarantee as the
-    other two providers. Used as the fallback when Gemini is unavailable or
-    errors -- Groq's own free tier is generous enough to cover a full batch
-    replay on its own if needed.
+    JSON-schema structured output for the same validation guarantee the
+    fallback provider gives.
+
+    The default provider. Its free tier is generous enough to cover a full
+    batch replay on its own, and it answers reliably enough to be the one a
+    live demo depends on -- Gemini's free tier caps out at a request quota low
+    enough that a batch run can exhaust it partway through, which is a worse
+    failure to hit on stage than a slightly different model.
 
     GPT-OSS-120B's strict mode has been reported to occasionally return
     free-form text instead of the requested schema (a known issue on Groq's
@@ -243,7 +172,7 @@ class GroqLLMClient:
             self._client = client
             return
         try:
-            import groq  # imported lazily, like the anthropic import above
+            import groq  # imported lazily: the rest of Revora runs without it
         except ImportError as exc:  # pragma: no cover - depends on environment
             raise LLMUnavailableError(
                 "the `groq` package is not installed; install it or pass a "
@@ -580,7 +509,6 @@ class IntelligenceLayer:
 
 
 __all__ = [
-    "AnthropicLLMClient",
     "ExplodingLLMClient",
     "FallbackLLMClient",
     "GeminiLLMClient",

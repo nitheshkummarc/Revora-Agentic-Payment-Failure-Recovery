@@ -122,14 +122,13 @@ discouraged in a docstring:
   retry against a real bank would land.
 
 **Known untested paths:**
-- `AnthropicLLMClient` has never answered a live call in this project, in any
-  session. It is exercised only by construction-level tests (request shape,
-  kwarg wiring) and mocks.
 - Gemini has never answered a live call *successfully* in this project.
   Every attempt has failed — either an `InternalServerError` or a `429`
-  free-tier quota wall (`"limit: 20, model: gemini-3.7-flash"`). The
-  Gemini→Groq fallback path itself **is** verified live, repeatedly, under
-  both failure types; Gemini's own success path is not.
+  free-tier quota wall (`"limit: 20, model: gemini-3.7-flash"`). That is the
+  reason it is the fallback rather than the primary. The fallback *mechanism*
+  is verified live, repeatedly, under both failure types; Gemini's own
+  success path is not, so a run that falls through to it is the one path here
+  with no live evidence behind it.
 - The grounding guard checks that a money-moving recommendation has *a* real
   error object behind it. It does not verify that every individual sentence
   in the model's `reasoning` field is true — a model could still write a
@@ -149,15 +148,15 @@ All eight components are built.
 | Mock payment gateway + fault injection | 38 |
 | State resolver | 30 |
 | Failure propagation tracer | 22 |
-| Recommendation layer | 91 |
+| Recommendation layer | 84 |
 | Policy engine | 70 |
 | Orchestrator + verify | 29 |
-| Batch runner (client selection, reproducibility) | 9 |
+| Batch runner (client selection, reproducibility) | 8 |
 | API / CORS scoping | 9 |
 | Synthetic dataset generator | 53 |
 | X-Ray dashboard | 79 |
 
-**351 backend + 79 frontend = 430 tests passing**, plus 18 that are skipped by
+**343 backend + 79 frontend = 422 tests passing**, plus 18 that are skipped by
 default — see below. Every count in this table came from running the
 corresponding test file directly (`pytest -q backend/tests/test_<name>.py`)
 and reading its own summary line, not from a shared total divided up by hand.
@@ -166,12 +165,12 @@ and reading its own summary line, not from a shared total divided up by hand.
 
 `test_intelligence_live_api.py` (18 tests) exercises prompt injection, and
 reasoning quality on ordinary evidence, against a **real** model rather than
-the offline stub. It skips unless one of `GEMINI_API_KEY`/`GOOGLE_API_KEY`/
-`GROQ_API_KEY`/`ANTHROPIC_API_KEY` is set, and skips loudly: a green suite
-without a key is not evidence it passed.
+the offline stub. It skips unless one of `GROQ_API_KEY`/`GEMINI_API_KEY`/
+`GOOGLE_API_KEY` is set, and skips loudly: a green suite without a key is not
+evidence it passed.
 
 ```bash
-GEMINI_API_KEY=... python -m pytest backend/tests/test_intelligence_live_api.py -v
+GROQ_API_KEY=... python -m pytest backend/tests/test_intelligence_live_api.py -v
 ```
 
 This file was rewritten in the project's most recent audit pass. Before that,
@@ -184,9 +183,6 @@ from `data/run_batch.py`'s own `_select_llm_client()`, so it now always
 exercises whichever provider chain is actually configured — not a fixed
 choice hardcoded in the test file.
 
-With real Gemini/Groq keys, all 18 passed live. Gemini's free-tier quota (20
-requests) was already exhausted before the run, so every call fell through to
-Groq — a real exercise of the fallback path, not a mock of it.
 
 ## Results
 
@@ -320,7 +316,7 @@ resolving to `PENDING_WEBHOOK` and escalating instead of landing in
 
 ```bash
 pip install -r backend/requirements.txt
-python -m pytest -q                                # 351 passed, 18 skipped (no key); 369 passed (with a key)
+python -m pytest -q                                # 343 passed, 18 skipped (no key); 361 passed (with a key)
 uvicorn app.main:app --reload --app-dir backend    # http://localhost:8000
 ```
 
@@ -410,17 +406,17 @@ Copy `.env.example` to `.env` and fill in what you have — it is read
 automatically (`python-dotenv`, wired in `core/config.py`), and a real
 exported environment variable always takes precedence over the file.
 
-**Model client selection order:** Gemini (with Groq as an automatic fallback
-if both keys below are set) → Groq alone → Anthropic → the offline stub, each
-gated on its own key. Gemini is checked first because it is free-tier and
-gives the same schema-validated structured-output guarantee the paid
-Anthropic API does.
+**Model client selection order:** Groq (with Gemini as an automatic fallback
+if both keys below are set) → Gemini alone → the offline stub, each gated on
+its own key. Both providers give the same schema-validated structured-output
+guarantee, so the order is decided by which one answers reliably: Groq's free
+tier carries a full 500-row batch, while Gemini's caps at a request quota a
+batch can exhaust partway through.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GEMINI_API_KEY` | unset | Default model provider. Free tier at [ai.google.dev](https://ai.google.dev). `GOOGLE_API_KEY` also works if that is what you already have set. |
-| `GROQ_API_KEY` | unset | Fallback provider (GPT-OSS-120B), used automatically if `GEMINI_API_KEY` fails or errors, or alone if only this key is set. Free tier at [console.groq.com](https://console.groq.com). |
-| `ANTHROPIC_API_KEY` | unset | Only read if neither key above is set. Paid; `AnthropicLLMClient` is unchanged and still available for anyone who already has a key — see [What makes this honest](#what-makes-this-honest) for its live-verification status. |
+| `GROQ_API_KEY` | unset | Default model provider (GPT-OSS-120B). Free tier at [console.groq.com](https://console.groq.com). |
+| `GEMINI_API_KEY` | unset | Fallback provider, used automatically if `GROQ_API_KEY` fails or errors, or alone if only this key is set. Free tier at [ai.google.dev](https://ai.google.dev); `GOOGLE_API_KEY` also works if that is what you already have set. See [What makes this honest](#what-makes-this-honest) for its live-verification status. |
 | `REVORA_CORS_ORIGINS` | `http://localhost:5173, http://127.0.0.1:5173, http://localhost:4173, http://127.0.0.1:4173` | Comma-separated origins allowed to read the API. Scoped rather than `*`, since nothing here needs to be readable by any page on the internet. |
 | `REVORA_DISABLE_LLM` | off | Operational kill switch: forces the same fail-safe escalation as a missing client, without touching how the layer is wired. Recognises `""`/`0`/`false`/`no`/`off` (case-insensitive) as off; anything else is on. |
 | `REVORA_DISABLED_RULES` | unset | Comma-separated `RuleId` names to skip in the policy engine's value-rule checks, for turning off a threshold fast during a live demo. Cannot reach the opt-out or missing-RBI-field gates — they aren't in the disablable list. An unrecognised name is logged separately rather than silently accepted. |

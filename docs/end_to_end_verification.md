@@ -2,7 +2,7 @@
 
 **Updated:** 2026-08-23 · **Scope:** full-pipeline acceptance pass plus the naive-baseline benchmark · **Tree:** clean at finish
 
-**Historical snapshot — read the Findings corrections before quoting anything below.** A full-codebase audit and remediation pass on 2026-08-25 fixed two of the six findings (1 and 5, marked RESOLVED below) and made other changes (grounding guard, kill switches, gateway locking, circuit-breaker cooldown, etc.) not reflected in the run conditions or numbers above, which describe the 2026-08-23 state only. Backend/frontend test counts in "Verification status" are also stale: see `CLAUDE.md` for the current totals.
+**Historical snapshot — read the Findings corrections before quoting anything below.** A full-codebase audit and remediation pass on 2026-08-25 fixed two of the six findings (1 and 5, marked RESOLVED below) and made other changes (grounding guard, kill switches, gateway locking, circuit-breaker cooldown, etc.) not reflected in the run conditions or numbers above, which describe the 2026-08-23 state only. Backend/frontend test counts in "Verification status" are also stale: see `README.md` for the current totals.
 
 **Correction, 2026-09-02 audit pass: the Part 1 batch counts below (324/63/79/4/30, 61.3%) are stale and do not match the current committed `data/batch_results.json`.** The 2026-08-25 pass's byte-for-byte reconfirmation was accurate *at that time*, but the dataset or run drifted afterward without this document being regenerated — the ambiguous bucket's recovered/no_action split is now 16/32, not 24/24. The current, verified-correct figures are **316 recovered (₹20,15,634) / 63 blocked / 79 escalated (₹2,66,421) / 4 needs_review / 38 no_action (₹1,08,362)**, matching `README.md` exactly (independently recomputed from the raw `events[]` array, not the file's own summary block). The Correctly Routed Rate is still 61.3%, now of ₹32,86,743 addressable. Part 2's individual per-payment traces are unaffected — none of those specific rows' outcomes changed, only the aggregate ambiguous-bucket split did.
 
@@ -12,7 +12,7 @@ built, so every figure below has been re-measured rather than carried over.
 
 ## 0. Run conditions — read before quoting any number here
 
-Everything here ran with **no `ANTHROPIC_API_KEY` available**. Every figure comes
+Everything here ran with **no model API key available**. Every figure comes
 from `StubLLMClient`, not from a live model.
 
 - **What is verified:** the deterministic pipeline — state resolution, tracing,

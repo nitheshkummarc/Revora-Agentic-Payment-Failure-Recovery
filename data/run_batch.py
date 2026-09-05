@@ -19,9 +19,9 @@ itself, so every payment is observed at the same moment. That is what makes a
 dropped webhook read as silence and a delayed one read as still in flight.
 
 Model. `_select_llm_client()` picks the first available option in this order:
-Gemini (with Groq as an automatic fallback if both keys are present), Groq
-alone, Anthropic, then the offline stub -- each gated on its own API key being
-set. The stub is a fallback for no key at all, not the default. A stubbed run
+Groq (with Gemini as an automatic fallback if both keys are present), Gemini
+alone, then the offline stub -- each gated on its own API key being set. The
+stub is a fallback for no key at all, not the default. A stubbed run
 needs no key and returns the same recommendation for every event, so everything
 it measures is a property of the deterministic pipeline -- resolution, tracing,
 policy and verification -- and not of any model's judgement. Figures from a
@@ -55,7 +55,6 @@ from app.gateway.schemas import (  # noqa: E402
     SimulateWebhookRequest,
 )
 from app.intelligence.llm_client import (  # noqa: E402
-    AnthropicLLMClient,
     FallbackLLMClient,
     GeminiLLMClient,
     GroqLLMClient,
@@ -136,14 +135,17 @@ def apply_step(gateway: MockPaymentGateway, step: Dict[str, Any]) -> None:
 
 
 def _select_llm_client(force_stub: bool = False) -> LLMClient:
-    """Gemini (+ Groq fallback if both keys present), then Groq alone, then
-    Anthropic, then the offline stub -- each gated on its own API key.
+    """Groq (+ Gemini fallback if both keys present), then Gemini alone, then
+    the offline stub -- each gated on its own API key.
 
     The stub is a fallback for no key at all, not the default -- a run with a
     key available must exercise a real model, not silently fall back to
-    canned output. Gemini is checked first because it is free-tier and gives
-    the same schema-validated structured-output guarantee Anthropic's paid
-    API does; Anthropic stays available for anyone who already has a key.
+    canned output. Groq is checked first because both providers give the same
+    schema-validated structured-output guarantee, and Groq is the one that
+    answers reliably: Gemini's free tier caps at a request quota a 500-row
+    batch can exhaust partway through, so leading with it means a demo run
+    degrading into fallback calls rather than starting on the path it stays
+    on.
 
     `force_stub` overrides all of the above. Without it, adding a real API
     key to the environment silently changes what this script measures -- the
@@ -155,22 +157,18 @@ def _select_llm_client(force_stub: bool = False) -> LLMClient:
     if force_stub:
         print("Model: StubLLMClient (--stub passed; ignoring any API keys present)")
         return StubLLMClient()
-    gemini_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     groq_key = os.environ.get("GROQ_API_KEY")
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+    gemini_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 
-    if gemini_key and groq_key:
-        print("Model: GeminiLLMClient with GroqLLMClient fallback (GEMINI_API_KEY and GROQ_API_KEY present)")
-        return FallbackLLMClient(primary=GeminiLLMClient(), fallback=GroqLLMClient())
-    if gemini_key:
-        print("Model: GeminiLLMClient (GEMINI_API_KEY present; set GROQ_API_KEY too for a fallback)")
-        return GeminiLLMClient()
+    if groq_key and gemini_key:
+        print("Model: GroqLLMClient with GeminiLLMClient fallback (GROQ_API_KEY and GEMINI_API_KEY present)")
+        return FallbackLLMClient(primary=GroqLLMClient(), fallback=GeminiLLMClient())
     if groq_key:
-        print("Model: GroqLLMClient (GROQ_API_KEY present, no GEMINI_API_KEY)")
+        print("Model: GroqLLMClient (GROQ_API_KEY present; set GEMINI_API_KEY too for a fallback)")
         return GroqLLMClient()
-    if anthropic_key:
-        print("Model: AnthropicLLMClient (ANTHROPIC_API_KEY present)")
-        return AnthropicLLMClient()
+    if gemini_key:
+        print("Model: GeminiLLMClient (GEMINI_API_KEY present, no GROQ_API_KEY)")
+        return GeminiLLMClient()
     print("Model: StubLLMClient (no model API key present; offline deterministic client)")
     return StubLLMClient()
 
@@ -334,8 +332,7 @@ def main() -> None:
         help=(
             "force the offline StubLLMClient regardless of any API key present "
             "in the environment -- reproduces the documented deterministic "
-            "baseline even when GEMINI_API_KEY/GROQ_API_KEY/ANTHROPIC_API_KEY "
-            "are set"
+            "baseline even when GROQ_API_KEY/GEMINI_API_KEY are set"
         ),
     )
     args = parser.parse_args()
