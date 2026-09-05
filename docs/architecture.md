@@ -7,7 +7,7 @@ happens to a single event as it moves through the pipeline.
 
 Nothing here introduces a figure the README does not already state. Where
 something is untested or assumed, it says so in the same terms the README's
-"What makes this honest" section uses.
+"What's proven and what isn't" section uses.
 
 ---
 
@@ -121,8 +121,8 @@ opt-out gate first, then the missing-required-field gates, then the value
 thresholds. Absence is checked before values because a missing compliance field
 must fail closed rather than being treated as a passing value.
 
-One precision worth stating because it is easy to describe wrongly: the first
-two stages are genuine early returns, but the value rules are not. All of them
+This next part is easy to describe wrongly. The first two stages are genuine
+early returns, but the value rules are not. All of them
 evaluate and are recorded, and only the earliest failure decides the outcome.
 That is harmless while every check is a pure predicate, and it matters the
 moment one does work rather than compare.
@@ -336,7 +336,7 @@ elapsed on the injected clock.
 ### Where the evidence for this lives
 
 The live-verified evidence for the fail-closed behaviour is in the README's
-"What makes this honest" section, and it should be read there with its own
+"What's proven and what isn't" section, and it should be read there with its own
 caveats attached rather than re-stated here as if independently confirmed. In
 particular: the injection guard's live results carry a specific caveat about
 which payloads the model resists varying between runs, and the batch-level

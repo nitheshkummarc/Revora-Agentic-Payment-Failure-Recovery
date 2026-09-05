@@ -118,8 +118,8 @@ every variation in outcome across the 500 rows is attributable to the resolver,
 the tracer, the guards, the policy engine, or Verify. That is precisely what
 this run is evidence about.
 
-There is a fourth property worth stating because it is easy to mistake for a
-weakness. `RETRY_SOFT` is exactly the money-moving action an injected note is
+There is a fourth property that is easy to mistake for a weakness.
+`RETRY_SOFT` is exactly the money-moving action an injected note is
 trying to elicit, so on every adversarial row the stub behaves as a model that
 has **fully complied with the attack** — and the guard catches it anyway. The
 stub is the worst case for the guard, not a soft test of it.
