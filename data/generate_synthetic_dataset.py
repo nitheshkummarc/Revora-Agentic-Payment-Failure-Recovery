@@ -558,7 +558,7 @@ STALE_SUCCESS_ROWS = 4
 def build_ambiguous(count: int, rng: random.Random, start: int) -> List[Dict[str, Any]]:
     """Seven sub-cases, covering both documented ambiguous behaviours plus two
     mechanisms that were previously unit-tested but never exercised at the
-    dataset level (README's "Benchmark scope" section named them explicitly).
+    dataset level.
 
     `silent_drop`      -- the webhook never fires. Only silence is observable,
                           and past the threshold that silence is a signal.

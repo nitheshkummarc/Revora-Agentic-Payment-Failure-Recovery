@@ -1,12 +1,12 @@
 # Revora — Evaluation Methodology
 
-Supplementary to `README.md`, which stays authoritative. This document is for
+Supplementary to `README.md` and [`reference.md`](reference.md), which stay authoritative. This document is for
 someone auditing the numbers rather than trusting them: how the dataset was
 built, why the headline batch runs against a stub, what the live tests prove
 instead, and what would have to change to evaluate any of this against a real
 payment stream.
 
-No figure here is new. Every number appears in `README.md` already; this
+No figure here is new. Every number appears in `README.md` or `reference.md` already; this
 document explains how it was produced and what it does and does not support.
 
 ---
@@ -51,7 +51,7 @@ production.** It exists to exercise every code path at a useful sample size —
 enough policy-violation rows that each RBI rule fires several times, enough
 adversarial rows that the injection guard is tested against variety rather than
 one payload. The dataset records this in its own `bucket_design.note` field, and
-the README states it in "Deliberately out of scope".
+`reference.md` states it in "Deliberately out of scope".
 
 Nothing in this repository supports presenting the split as a production
 distribution, and the consequence is worth being explicit about: because the
@@ -192,7 +192,7 @@ was a constant, not a measurement.
 
 The fix reads the model's own pre-guard answer (`original_llm_action`, falling
 back to the final action when no guard fired) and classifies it against the
-money-moving action set. The README records both the corrected figure and the
+money-moving action set. `reference.md` records both the corrected figure and the
 fact that the earlier one was an artifact. The same flaw also sat in the product
 itself: the guard recorded an "override" on those no-op cases, which would have
 inflated the dashboard's override rate on any live run. The guard now records an
@@ -262,7 +262,7 @@ Construction, and why each choice matters:
 - **Value at the payment amount.** Revora's retries take approved discounts off
   the charge (₹11,500 across 23 rows in the committed run); the naive policy
   applies none. The comparison counts both at the original amount so the two
-  columns are measured the same way. The README's results table shows the
+  columns are measured the same way. The results table in `reference.md` shows the
   amount actually charged.
 
 ### The caveat, repeated because it is load-bearing
@@ -276,7 +276,7 @@ land.
 
 What the comparison does show faithfully is the cost side, which the simulator
 does model: retries attempted that the policy engine refuses, and
-already-successful payments retried without noticing. Read the README's own
+already-successful payments retried without noticing. Read `reference.md`'s own
 table for those figures with its framing attached.
 
 ---

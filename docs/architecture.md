@@ -1,12 +1,12 @@
 # Revora — Architecture
 
-Supplementary to `README.md`, which stays authoritative. This document goes a
+Supplementary to `README.md` and [`reference.md`](reference.md), which stay authoritative. This document goes a
 level deeper for a reviewer deciding whether to read the source: what each
 module owns, how the two structural boundaries are actually enforced, and what
 happens to a single event as it moves through the pipeline.
 
-Nothing here introduces a figure the README does not already state. Where
-something is untested or assumed, it says so in the same terms the README's
+Nothing here introduces a figure the README or `reference.md` does not already state. Where
+something is untested or assumed, it says so in the same terms `reference.md`'s
 "What's proven and what isn't" section uses.
 
 ---
@@ -292,7 +292,7 @@ that carries the request has nowhere to put them.
 model returns something that does not satisfy `LLMRecommendation` — a malformed
 response, an invented action, a garbled token in the JSON — parsing raises, and
 the layer treats it exactly as it treats a network failure: escalate rather than
-guess. The README records this happening live rather than only in tests: a real
+guess. `reference.md` records this happening live rather than only in tests: a real
 Groq response once failed its own strict-JSON validation and the system failed
 closed to `ESCALATE_HUMAN`.
 
@@ -370,7 +370,7 @@ the required compliance facts were present. Approval means "no rule objected",
 and every rule evaluated is recorded on the decision either way — an audit shows
 what was checked, not only what fired.
 
-**The evidence is stale.** This is the case the README's
+**The evidence is stale.** This is the case `reference.md`'s
 `verify_mismatch_stale_success` scenario exists to exercise: evidence reads
 `FAILED` at full confidence while the gateway has already captured the payment.
 The retry's own status query sees `CAPTURED` and stops before any write; the
@@ -391,7 +391,7 @@ elapsed on the injected clock.
 
 ### Where the evidence for this lives
 
-The live-verified evidence for the fail-closed behaviour is in the README's
+The live-verified evidence for the fail-closed behaviour is in `reference.md`'s
 "What's proven and what isn't" section, and it should be read there with its own
 caveats attached rather than re-stated here as if independently confirmed. In
 particular: the injection guard's live results carry a specific caveat about
