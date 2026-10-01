@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from app.intelligence.schemas import RecommendedAction
 
@@ -34,7 +34,9 @@ class EventContext(StrictModel):
     currency: str = "INR"
 
     # --- RBI fields. Optional so that absence is representable and blocks. ---
-    pre_debit_notice_sent_at: Optional[datetime] = None
+    # Timezone-aware only: the 24h notice rule subtracts this from an aware
+    # evaluation time, and a naive value has no defined instant to compare.
+    pre_debit_notice_sent_at: Optional[AwareDatetime] = None
     mandate_ceiling: Optional[int] = Field(
         default=None, ge=0, description="Customer-set ceiling in paise"
     )
@@ -58,7 +60,7 @@ class EventContext(StrictModel):
     # confidence rule records itself as skipped rather than silently passing.
     trace_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
-    evaluated_at: Optional[datetime] = None
+    evaluated_at: Optional[AwareDatetime] = None
 
 
 class RuleEvaluation(StrictModel):

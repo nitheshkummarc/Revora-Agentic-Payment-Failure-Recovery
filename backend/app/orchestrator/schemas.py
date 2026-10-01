@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from app.intelligence.schemas import RecommendedAction
 from app.state_machine.states import CanonicalState
@@ -51,16 +51,20 @@ class BatchEvent(StrictModel):
 
     payment_id: str
     amount: int = Field(ge=0, description="Amount in paise (50000 = Rs.500)")
-    currency: str = "INR"
+    # INR only: the compliance thresholds are rupee figures.
+    currency: Literal["INR"] = "INR"
     customer_note: Optional[str] = None
 
-    pre_debit_notice_sent_at: Optional[datetime] = None
+    # Timezone-aware only; the 24h rule subtracts it from an aware time.
+    pre_debit_notice_sent_at: Optional[AwareDatetime] = None
     mandate_ceiling: Optional[int] = Field(default=None, ge=0)
     afa_flag: Optional[bool] = None
     # Selects which AFA threshold the policy engine applies. Optional, and an
     # unrecognised value falls back to the general threshold.
     mandate_category: Optional[str] = None
     opted_out: bool = False
+    # Attempts already made, as the caller knows them. The policy uses the
+    # larger of this and the gateway's recorded count.
     retry_count: int = Field(default=0, ge=0)
     discount_amount: int = Field(default=0, ge=0)
 
@@ -70,21 +74,34 @@ class ExecutionRecord(StrictModel):
 
     action: RecommendedAction
     gateway_called: bool
+    # Gateway operations performed, named by their HTTP route. Called
+    # in-process, not over HTTP.
     calls: List[str] = Field(default_factory=list)
     expected_state: Optional[str] = None
     detail: str
     cooldown_until: Optional[datetime] = None
-    # Whether the gateway call completed without error. Distinct from whether
-    # the outcome was favourable -- see `reconciled`.
+    # RETRY_SOFT only: the key the attempt was sent under.
+    idempotency_key: Optional[str] = None
+    # RETRY_SOFT only: the payment that was charged (a new attempt, or the
+    # original when an authorization was captured), the amount captured, and
+    # the discount taken off it. All in paise.
+    charged_payment_id: Optional[str] = None
+    charged_amount: Optional[int] = None
+    discount_applied: Optional[int] = None
+    # Whether the action ran to completion (not whether it went well; see
+    # `reconciled`). A retry that stops at its status check did not complete.
     succeeded: bool = True
-    # REQUEST_VERIFICATION only: whether the status query found the payment had
-    # actually succeeded. None for every other action.
+    # Whether a status query found the payment had already succeeded. Set by
+    # REQUEST_VERIFICATION, and by RETRY_SOFT when it stops on a captured
+    # payment.
     reconciled: Optional[bool] = None
 
 
 class VerificationRecord(StrictModel):
-    """The post-action re-query. `matched` is the only thing that decides
-    whether an execution counts as a recovery."""
+    """The post-action re-query. For an action that changes gateway state
+    (RETRY_SOFT), `matched` is the only thing that decides whether it counts as
+    a recovery. Actions that change nothing -- including REQUEST_VERIFICATION,
+    whose status query is itself the check -- record `performed=False`."""
 
     performed: bool
     expected_state: Optional[str] = None
@@ -121,9 +138,16 @@ class EventTrace(StrictModel):
     # Plan
     recommended_action: Optional[RecommendedAction] = None
     llm_called: Optional[bool] = None
+    # Why no model answer was used when llm_called is False: "tracer_ambiguous"
+    # or a fail-safe reason such as "llm_call_failed".
+    short_circuit_reason: Optional[str] = None
+    # The model that produced the recommendation; None when none did.
+    model: Optional[str] = None
     recommendation_confidence: Optional[float] = None
     reasoning: Optional[str] = None
     injection_patterns_flagged: List[str] = Field(default_factory=list)
+    # Kinds of personal data redacted from the note (e.g. "phone").
+    pii_redacted: List[str] = Field(default_factory=list)
     # What the model actually returned, when the deterministic guard replaced
     # it. `recommended_action` above is the guard's answer, so without these two
     # the audit trail shows the safe action with no record that a different one
@@ -150,7 +174,8 @@ class HumanReviewItem(StrictModel):
     payment_id: str
     amount: int
     reason: str
-    final_action: RecommendedAction
+    # None when the event stopped before an action was decided.
+    final_action: Optional[RecommendedAction] = None
     root_cause: Optional[str] = None
     blocked_reason: Optional[str] = None
 

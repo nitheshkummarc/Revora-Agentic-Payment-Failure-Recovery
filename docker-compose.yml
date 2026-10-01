@@ -13,5 +13,8 @@ services:
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    # Published on the host's loopback only. The API has no authentication
+    # and its gateway routes can write, so it is not exposed to the network;
+    # uvicorn still binds 0.0.0.0 because that is the container's interface.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"

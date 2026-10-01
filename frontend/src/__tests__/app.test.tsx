@@ -12,6 +12,7 @@ import App from "../App";
 import {
   batchResultsUrl,
   loadBatchResults,
+  FETCH_TIMEOUT_MS,
   runIdFromLocation,
   SNAPSHOT_URL,
 } from "../api/client";
@@ -56,6 +57,38 @@ describe("App", () => {
     expect(screen.getByTestId("policy-block")).toBeInTheDocument();
   });
 
+  it("does not carry copy feedback over to the next selected event", async () => {
+    const user = userEvent.setup();
+    // Installed after setup(), which puts its own clipboard stub in place.
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      configurable: true,
+    });
+    render(<App load={loader()} />);
+    await screen.findByTestId("event-feed");
+
+    await user.click(screen.getByTestId("event-row-pay_blocked"));
+    await user.click(screen.getByTestId("copy-trace-json"));
+    expect(await screen.findByText("Copied")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("event-row-pay_recovered"));
+    expect(screen.queryByText("Copied")).not.toBeInTheDocument();
+    expect(screen.getByText("Copy Trace JSON")).toBeInTheDocument();
+  });
+
+  it("opens the human review queue and a queued item's trace", async () => {
+    const user = userEvent.setup();
+    render(<App load={loader()} />);
+    await screen.findByTestId("event-feed");
+
+    await user.click(screen.getByTestId("tab-review"));
+    expect(screen.getByTestId("review-queue")).toBeInTheDocument();
+    await user.click(screen.getByTestId("review-row-pay_escalated"));
+    expect(
+      within(screen.getByTestId("trace-view")).getByText("pay_escalated"),
+    ).toBeInTheDocument();
+  });
+
   it("switches to the dedicated policy block log and back", async () => {
     const user = userEvent.setup();
     render(<App load={loader()} />);
@@ -96,8 +129,11 @@ describe("api client", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const loaded = await loadBatchResults("?run=run-1");
-    expect(fetchMock).toHaveBeenCalledWith("/api/batch-results/run-1");
-    expect(loaded.source).toBe("live-api");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/batch-results/run-1",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(loaded.source).toBe("backend-api");
     vi.unstubAllGlobals();
   });
 
@@ -113,9 +149,36 @@ describe("api client", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const loaded = await loadBatchResults("");
-    expect(fetchMock).toHaveBeenCalledWith(SNAPSHOT_URL);
+    expect(fetchMock).toHaveBeenCalledWith(
+      SNAPSHOT_URL,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(loaded.source).toBe("snapshot");
     vi.unstubAllGlobals();
+  });
+
+  it("gives up with a clear error when the backend never answers", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (_url: string, init?: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () =>
+              reject(new DOMException("aborted", "AbortError")),
+            );
+          }),
+      ),
+    );
+    try {
+      const pending = loadBatchResults("?run=slow");
+      const assertion = expect(pending).rejects.toThrow("no response from");
+      await vi.advanceTimersByTimeAsync(FETCH_TIMEOUT_MS);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
   });
 
   it("raises on a non-ok response rather than returning empty results", async () => {

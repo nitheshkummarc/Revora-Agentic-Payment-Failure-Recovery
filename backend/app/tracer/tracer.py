@@ -7,12 +7,19 @@ calls, no recovery decisions, no gateway calls.
 
 Three properties distinguish this from reading the last error code:
 
-1. Reverse BFS over a real causal graph. Nodes are individual webhook
-   delivery attempts, not just events. Edges run backward along two kinds of
-   causal link: retry edges (delivery attempt k came after attempt k-1 of the
-   same event) and progression edges (this event followed the previous one in
-   the payment's life). The walk starts at the terminal node and discovers
-   predecessors, so the output is a causal path rather than a flat list.
+1. A backward walk over an explicit causal graph. Nodes are individual
+   deliveries of an event, not just events, so a redelivered copy (a
+   duplicate webhook, `delivery_attempt` 2+) is a node of its own. Edges run
+   backward along two kinds of link: redelivery edges (copy k of an event came
+   after copy k-1) and progression edges (this event followed the previous
+   one in the payment's life). The walk starts at the terminal node and
+   discovers predecessors, so the output is a causal path rather than a flat
+   list.
+
+   Today every node has at most one predecessor, so the graph is a chain and
+   the walk returns deliveries in causal order. Transport-level delivery
+   retries are logged by the gateway, not recorded as events. The graph form
+   leaves room for events with more than one cause.
 
 2. Root cause is quoted, never paraphrased. The `root_cause` string embeds the
    literal `source`, `step` and `reason` values from the event's own error
@@ -32,7 +39,7 @@ from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from app.core.logging import get_logger, log_event
-from app.gateway.schemas import ErrorObject, WebhookEvent, WebhookEventName
+from app.gateway.schemas import ErrorObject, WebhookEvent, WebhookEventName, event_identity
 from app.state_machine.schemas import ResolutionRule, StateResolution
 from app.state_machine.states import CanonicalState, from_event_name
 from app.tracer.schemas import CausalHop, TraceInput, TraceResult
@@ -108,6 +115,7 @@ AMBIGUOUS_RESOLUTION_RULES = frozenset(
     {
         ResolutionRule.SILENCE_THRESHOLD_EXCEEDED,
         ResolutionRule.INCONSISTENT_EVENT_CHAIN,
+        ResolutionRule.ORDER_PAID_UNCONFIRMED,
     }
 )
 
@@ -239,12 +247,7 @@ class FailurePropagationTracer:
         seen: Set[Tuple] = set()
         unique: List[WebhookEvent] = []
         for event in events:
-            key = (
-                event.entity_id,
-                event.sequence,
-                event.occurred_at.isoformat(),
-                event.delivery_attempt,
-            )
+            key = (*event_identity(event), event.delivery_attempt)
             if key in seen:
                 continue
             seen.add(key)
@@ -255,8 +258,8 @@ class FailurePropagationTracer:
         """Build the causal DAG.
 
         Two edge kinds, both pointing backward in time:
-          * retry edge      -- attempt k of event E follows attempt k-1 of E
-          * progression edge -- event E follows the last attempt of event E-1
+          * redelivery edge  -- copy k of event E follows copy k-1 of E
+          * progression edge -- event E follows the last copy of event E-1
         """
         graph: Dict[str, _Node] = {}
         attempts_by_event: Dict[str, List[WebhookEvent]] = {}
@@ -282,7 +285,7 @@ class FailurePropagationTracer:
                 node_id = self._node_id(event)
                 predecessors: List[str] = []
                 if attempt_index > 0:
-                    # retry edge
+                    # redelivery edge
                     predecessors.append(self._node_id(attempts[attempt_index - 1]))
                 elif previous_event_last_node is not None:
                     # progression edge

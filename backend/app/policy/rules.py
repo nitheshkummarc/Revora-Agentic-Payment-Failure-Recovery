@@ -146,6 +146,7 @@ class RuleId(str, Enum):
     # which threshold was applied and why.
     AFA_SIP_INSURANCE_REQUIRED_AND_MISSING = "AFA_SIP_INSURANCE_REQUIRED_AND_MISSING"
     MAX_DISCOUNT_EXCEEDED = "MAX_DISCOUNT_EXCEEDED"
+    DISCOUNT_EXCEEDS_AMOUNT = "DISCOUNT_EXCEEDS_AMOUNT"
     MAX_RETRIES_EXCEEDED = "MAX_RETRIES_EXCEEDED"
     TRACE_CONFIDENCE_BELOW_THRESHOLD = "TRACE_CONFIDENCE_BELOW_THRESHOLD"
 
@@ -404,6 +405,23 @@ def check_max_discount(discount_paise: int) -> Optional[Violation]:
         detail=(
             f"proposed discount {_rupees(discount_paise)} exceeds MAX_DISCOUNT of "
             f"Rs.{MAX_DISCOUNT:,}"
+        ),
+        final_action=RecommendedAction.ESCALATE_HUMAN,
+    )
+
+
+def check_discount_below_amount(
+    discount_paise: int, amount_paise: int
+) -> Optional[Violation]:
+    """The discount is taken off the amount the retry charges, so it has to
+    leave something to charge."""
+    if discount_paise == 0 or discount_paise < amount_paise:
+        return None
+    return Violation(
+        rule_id=RuleId.DISCOUNT_EXCEEDS_AMOUNT,
+        detail=(
+            f"proposed discount {_rupees(discount_paise)} is not below the payment "
+            f"amount {_rupees(amount_paise)}"
         ),
         final_action=RecommendedAction.ESCALATE_HUMAN,
     )

@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from typing import Callable, Iterable, List, Optional, Sequence, Tuple, Union
 
 from app.core.logging import get_logger, log_event
-from app.gateway.schemas import WebhookEvent, WebhookEventName
+from app.gateway.schemas import WebhookEvent, WebhookEventName, event_identity
 from app.state_machine.schemas import (
     PaymentObservation,
     ResolutionLogEntry,
@@ -86,6 +86,10 @@ PENALTY_SILENCE_EXCEEDED = 0.70
 # most likely just in flight, so confidence stays high.
 PENALTY_WITHIN_SILENCE = 0.10
 
+# order.paid with no payment.captured behind it: the evidence contradicts
+# itself. Large enough to make the trace ambiguous on its own.
+PENALTY_ORDER_PAID_UNCONFIRMED = 0.50
+
 CONFIDENCE_FLOOR = 0.05
 
 
@@ -117,10 +121,12 @@ class StateResolver:
         observed_at: Optional[datetime],
     ) -> PaymentObservation:
         if isinstance(event_or_events, PaymentObservation):
-            observation = event_or_events.model_copy(deep=True)
+            # Rebuilt through validation rather than copied and mutated, so an
+            # overriding `observed_at` is held to the same rules as the rest.
+            data = event_or_events.model_dump()
             if observed_at is not None:
-                observation.observed_at = observed_at
-            return observation
+                data["observed_at"] = observed_at
+            return PaymentObservation.model_validate(data)
 
         if isinstance(event_or_events, WebhookEvent):
             events: List[WebhookEvent] = [event_or_events]
@@ -218,7 +224,29 @@ class StateResolver:
         rule: ResolutionRule
 
         has_state_bearing = any(event.event in STATE_BEARING_EVENTS for event in ordered)
-        if not has_state_bearing:
+        order_paid = [e for e in ordered if e.event is WebhookEventName.ORDER_PAID]
+        if order_paid and state not in (CanonicalState.CAPTURED, CanonicalState.REVERSED):
+            # order.paid says the payment succeeded; nothing delivered confirms
+            # a capture. Checked before the silence rule, which would otherwise
+            # read this as "no news" and, inside the threshold, as in progress.
+            folded = state
+            state = CanonicalState.PENDING_WEBHOOK
+            needs_status_check = True
+            rule = ResolutionRule.ORDER_PAID_UNCONFIRMED
+            detail = (
+                f"order.paid was delivered but the payment events resolve to "
+                f"{folded.value}, not CAPTURED; a status check is required before "
+                "any recovery action"
+            )
+            log.append(
+                ResolutionLogEntry(
+                    rule=rule.value,
+                    message=detail,
+                    event_ids=[e.event_id for e in order_paid],
+                    at=now,
+                )
+            )
+        elif not has_state_bearing:
             silence_seconds = (now - observation.created_at).total_seconds()
             if silence_seconds >= self.silence_threshold_seconds:
                 state = CanonicalState.PENDING_WEBHOOK
@@ -310,7 +338,7 @@ class StateResolver:
     @staticmethod
     def _dedupe_key(event: WebhookEvent):
         """The event's own identity, never its arrival order."""
-        return (event.entity_id, event.sequence, event.occurred_at.isoformat())
+        return event_identity(event)
 
     def _deduplicate(
         self, events: Iterable[WebhookEvent]
@@ -407,7 +435,9 @@ class StateResolver:
             confidence -= PENALTY_OUT_OF_ORDER
         confidence -= PENALTY_DUPLICATE * duplicate_count
         confidence -= PENALTY_ILLEGAL_TRANSITION * illegal_count
-        if rule is ResolutionRule.SILENCE_THRESHOLD_EXCEEDED:
+        if rule is ResolutionRule.ORDER_PAID_UNCONFIRMED:
+            confidence -= PENALTY_ORDER_PAID_UNCONFIRMED
+        elif rule is ResolutionRule.SILENCE_THRESHOLD_EXCEEDED:
             confidence -= PENALTY_SILENCE_EXCEEDED
         elif rule is ResolutionRule.WITHIN_SILENCE_THRESHOLD:
             confidence -= PENALTY_WITHIN_SILENCE

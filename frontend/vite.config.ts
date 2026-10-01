@@ -3,8 +3,9 @@ import react from "@vitejs/plugin-react";
 
 // The dashboard reads the backend across an origin boundary in development.
 // Proxying keeps the browser on one origin, so no CORS negotiation is needed
-// for the dev server; the backend also sets permissive CORS for the case where
-// the built bundle is served from somewhere else.
+// for the dev server. For the built bundle served by `vite preview`, the
+// backend allows the dev and preview origins explicitly (not "*"); any other
+// host needs REVORA_CORS_ORIGINS set on the backend.
 export default defineConfig({
   plugins: [react()],
   server: {

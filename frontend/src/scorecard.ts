@@ -24,13 +24,21 @@ const OUTCOMES: Outcome[] = [
 ];
 
 export interface ModelUse {
-  /** Rows where the model was actually called. */
+  /** Rows where a model answer was obtained and used. */
   reachedModel: number;
   /**
    * Rows that reached the recommendation layer but were answered without
    * calling the model, because the tracer marked the evidence too thin.
    */
   shortCircuited: number;
+  /**
+   * Rows where the model should have been asked but no usable answer was
+   * available -- the call failed, the circuit breaker was open, the model was
+   * switched off, or none was configured -- so the layer escalated instead.
+   * Kept apart from `shortCircuited`: that one is the system choosing not to
+   * ask, this one is the system being unable to.
+   */
+  failedSafe: number;
   /**
    * Rows that never reached the layer at all -- the payment had not failed, so
    * there was nothing to recommend.
@@ -41,6 +49,7 @@ export interface ModelUse {
 
   overrideRate: number;
   shortCircuitRate: number;
+  failSafeRate: number;
   neverConsultedRate: number;
 }
 
@@ -56,15 +65,21 @@ export interface ReconciliationCheck {
 }
 
 export interface ModelProvenance {
-  /**
-   * Whether the run data records which model produced these recommendations.
-   * The trace log carries no model identity, so this is false for every run the
-   * current pipeline writes.
-   */
+  /** Whether the run data records which model produced its recommendations. */
   recorded: boolean;
+  /** Every distinct model that answered, in first-seen order. */
+  models: string[];
+  /** True when every answer came from the offline stub. */
+  stubOnly: boolean;
   label: string;
   detail: string;
 }
+
+/**
+ * The name `StubLLMClient` reports as its model. Mirrors the backend default;
+ * the committed baseline run is produced with it.
+ */
+export const STUB_MODEL = "stub-model";
 
 export interface Scorecard {
   totalEvents: number;
@@ -145,25 +160,65 @@ function reconcile(results: BatchResults): ReconciliationCheck[] {
 /**
  * What the run records about which model answered.
  *
- * The trace log has no field for model identity, so the dashboard cannot tell a
- * stubbed run from a live one. That is stated plainly rather than guessed at:
- * inferring "stub" from the shape of the reasoning text would be a guess
- * presented as a fact, and the one thing this label must never do is imply the
- * model was evaluated when it was not.
+ * Read from each trace's `model` field, never inferred from the shape of the
+ * reasoning text: inferring "stub" from wording would be a guess presented as
+ * a fact, and the one thing this label must never do is imply the model was
+ * evaluated when it was not.
  */
 function provenance(events: EventTrace[]): ModelProvenance {
-  const consulted = events.filter((event) => event.llm_called === true).length;
+  const answered = events.filter((event) => event.llm_called === true);
+  const models = [
+    ...new Set(
+      answered
+        .map((event) => event.model)
+        .filter((model): model is string => typeof model === "string" && model !== ""),
+    ),
+  ];
+  const caveat =
+    "Treat every figure here as a measurement of the deterministic pipeline, " +
+    "not of model judgement.";
+
+  if (answered.length === 0) {
+    return {
+      recorded: false,
+      models: [],
+      stubOnly: false,
+      label: "No model was consulted on this run",
+      detail: "Every event was decided without a model answer.",
+    };
+  }
+  if (models.length === 0) {
+    return {
+      recorded: false,
+      models: [],
+      stubOnly: false,
+      label: "Model not identified by this run",
+      detail:
+        `${answered.length} recommendation(s) came from a model this run does not ` +
+        `name, so it cannot say whether that was a real model or the stub. ${caveat}`,
+    };
+  }
+  const stubOnly = models.every((model) => model === STUB_MODEL);
+  if (stubOnly) {
+    return {
+      recorded: true,
+      models,
+      stubOnly,
+      label: "Offline stub model (StubLLMClient)",
+      detail:
+        `All ${answered.length} recommendation(s) came from StubLLMClient, which ` +
+        `returns RETRY_SOFT every time. ${caveat}`,
+    };
+  }
   return {
-    recorded: false,
-    label: "Model not identified by this run",
+    recorded: true,
+    models,
+    stubOnly,
+    label: `Model: ${models.join(", ")}`,
     detail:
-      consulted > 0
-        ? `${consulted} recommendation(s) came from a model this run does not name. ` +
-          "The committed batch is produced by data/run_batch.py, which wires " +
-          "StubLLMClient, so unless it was re-run against a live model these are " +
-          "stub answers. Treat every figure here as a measurement of the " +
-          "deterministic pipeline, not of model judgement."
-        : "No model was consulted on this run.",
+      `${answered.length} recommendation(s) came from ${models.join(", ")}. One run ` +
+      "is a single sample of model behaviour, not an evaluation of it; the " +
+      "deterministic guard and policy engine still decided what was allowed.",
   };
 }
 
@@ -171,11 +226,16 @@ export function scorecard(results: BatchResults): Scorecard {
   const events = results.events;
   const enforcement = enforcementSummary(results);
 
-  // Three mutually exclusive populations, keyed off llm_called: true means the
-  // model answered, false means the layer answered without it, and null means
-  // the layer was never reached.
+  // Four exclusive groups: llm_called true (model answered), null (layer not
+  // reached), and false split by the ambiguity gate -- ambiguous traces are
+  // never sent to the model; otherwise no model answer was available.
   const reachedModel = events.filter((e) => e.llm_called === true).length;
-  const shortCircuited = events.filter((e) => e.llm_called === false).length;
+  const shortCircuited = events.filter(
+    (e) => e.llm_called === false && e.ambiguous === true,
+  ).length;
+  const failedSafe = events.filter(
+    (e) => e.llm_called === false && e.ambiguous !== true,
+  ).length;
   const neverConsulted = events.filter((e) => e.llm_called === null).length;
   const overridden = events.filter((e) => e.original_llm_action !== null).length;
 
@@ -186,12 +246,14 @@ export function scorecard(results: BatchResults): Scorecard {
     modelUse: {
       reachedModel,
       shortCircuited,
+      failedSafe,
       neverConsulted,
       overridden,
       // Denominator is the rows that actually reached the model: the guard can
       // only override an answer it was given.
       overrideRate: rate(overridden, reachedModel),
       shortCircuitRate: rate(shortCircuited, events.length),
+      failSafeRate: rate(failedSafe, events.length),
       neverConsultedRate: rate(neverConsulted, events.length),
     },
     injection: {

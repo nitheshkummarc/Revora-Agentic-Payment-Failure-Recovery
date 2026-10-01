@@ -54,6 +54,7 @@ from app.gateway.schemas import (  # noqa: E402
     FailPaymentRequest,
     SimulateWebhookRequest,
 )
+from app.intelligence.schemas import RecommendedAction  # noqa: E402
 from app.intelligence.llm_client import (  # noqa: E402
     FallbackLLMClient,
     GeminiLLMClient,
@@ -91,6 +92,14 @@ class BatchClock:
 
 def _rupees(paise: int) -> str:
     return f"Rs.{paise / PAISE_PER_RUPEE:,.2f}"
+
+
+def failure_rate(value: str) -> float:
+    """argparse type for --failure-rate: a probability between 0 and 1."""
+    rate = float(value)
+    if not 0.0 <= rate <= 1.0:
+        raise argparse.ArgumentTypeError(f"must be between 0 and 1, got {value}")
+    return rate
 
 
 def _chaos_config(raw: Dict[str, Any] | None) -> ChaosConfig | None:
@@ -215,7 +224,8 @@ def seed_and_run(
 
 
 def _report_dropped_webhooks(gateway: MockPaymentGateway) -> None:
-    """Delivery failures that exhausted the retry budget.
+    """Webhooks that never landed: those that exhausted the retry budget, and
+    those refused outright because the circuit breaker was open.
 
     Reported rather than assumed absent. A webhook that never landed changes
     that payment's evidence, so it can move a row from clean failure to silence
@@ -227,10 +237,82 @@ def _report_dropped_webhooks(gateway: MockPaymentGateway) -> None:
         for entry in gateway.delivery_client.delivery_log
         if not entry.succeeded and entry.attempt == gateway.settings.delivery_max_attempts
     ]
+    # A delivery refused by an open breaker makes no attempt at all, so it
+    # never appears in the delivery log; the gateway records it in the
+    # transition log instead.
+    refused = [
+        entry
+        for entries in gateway.transition_log.values()
+        for entry in entries
+        if entry.reason.startswith("delivery_circuit_open")
+    ]
     total = len(gateway.delivery_client.delivery_log)
-    print(f"Webhook delivery: {total} attempts, {len(exhausted)} exhausted the retry budget")
+    print(
+        f"Webhook delivery: {total} attempts, {len(exhausted)} exhausted the retry "
+        f"budget, {len(refused)} refused by an open circuit breaker"
+    )
     if gateway.delivery_client.circuit_open:
         print("  WARNING: the delivery circuit breaker is open; later webhooks never landed")
+
+
+#: Resolved states in which the payment had succeeded without any recovery.
+SUCCEEDED_STATES = frozenset({"AUTHORIZED", "CAPTURED"})
+
+
+def money_figures(events) -> Dict[str, Any]:
+    """The report's money figures, in paise, summed from the per-event log.
+
+    never_at_risk   no_action rows whose payment had already succeeded. An
+                    in-flight payment or a failed one on cooldown is still at
+                    risk and stays in the addressable total.
+    settled_via_retry   the amount the retries actually charged, net of any
+                    discount, which is reported separately.
+    found_already_paid  recovered by a status query, with nothing charged.
+
+    The parts add up to the batch total.
+    """
+    by_outcome: Dict[str, int] = {}
+    for event in events:
+        by_outcome[event.outcome.value] = by_outcome.get(event.outcome.value, 0) + event.amount
+    total = sum(e.amount for e in events)
+
+    def resolved(e) -> str:
+        return e.resolved_state.value if e.resolved_state is not None else ""
+
+    never_at_risk = sum(
+        e.amount
+        for e in events
+        if e.outcome is EventOutcome.NO_ACTION and resolved(e) in SUCCEEDED_STATES
+    )
+    retried = [
+        e
+        for e in events
+        if e.outcome is EventOutcome.RECOVERED
+        and e.execution is not None
+        and e.execution.action is RecommendedAction.RETRY_SOFT
+    ]
+    settled_via_retry = sum(
+        e.execution.charged_amount if e.execution.charged_amount is not None else e.amount
+        for e in retried
+    )
+    discount_given = sum(e.execution.discount_applied or 0 for e in retried)
+    found_already_paid = by_outcome.get(EventOutcome.RECOVERED.value, 0) - sum(
+        e.amount for e in retried
+    )
+    recovered = settled_via_retry + found_already_paid
+    addressable = total - never_at_risk
+    return {
+        "by_outcome": by_outcome,
+        "total": total,
+        "never_at_risk": never_at_risk,
+        "no_action_at_risk": by_outcome.get(EventOutcome.NO_ACTION.value, 0) - never_at_risk,
+        "addressable": addressable,
+        "recovered": recovered,
+        "settled_via_retry": settled_via_retry,
+        "discount_given": discount_given,
+        "found_already_paid": found_already_paid,
+        "preserved_by_policy": by_outcome.get(EventOutcome.BLOCKED.value, 0),
+    }
 
 
 def report(results: BatchResults, dataset: Dict[str, Any]) -> None:
@@ -254,31 +336,37 @@ def report(results: BatchResults, dataset: Dict[str, Any]) -> None:
         print(f"  {label:<14} {value:>4}  ({value / summary.total_events:>5.1%})")
     print(f"  {'total':<14} {summary.total_events:>4}")
 
-    by_outcome: Dict[str, int] = {}
-    for event in events:
-        by_outcome[event.outcome.value] = by_outcome.get(event.outcome.value, 0) + event.amount
-
-    total_paise = sum(e.amount for e in events)
-    no_action_paise = by_outcome.get(EventOutcome.NO_ACTION.value, 0)
-    # Payments that never failed need no recovery, so counting them in the
-    # denominator would inflate the rate with money that was never at risk.
-    addressable = total_paise - no_action_paise
-    recovered_paise = by_outcome.get(EventOutcome.RECOVERED.value, 0)
-    blocked_paise = by_outcome.get(EventOutcome.BLOCKED.value, 0)
+    money = money_figures(events)
+    by_outcome = money["by_outcome"]
+    total_paise = money["total"]
+    never_at_risk_paise = money["never_at_risk"]
+    addressable = money["addressable"]
+    recovered_paise = money["recovered"]
+    retried_paise = money["settled_via_retry"]
+    discount_paise = money["discount_given"]
+    reconciled_paise = money["found_already_paid"]
+    blocked_paise = money["preserved_by_policy"]
 
     print()
     print("Money moved through verified-safe paths")
     print("(paise internally, shown in rupees; not a claim about retry success):")
     print(f"  batch value            {_rupees(total_paise):>18}")
-    print(f"  never at risk          {_rupees(no_action_paise):>18}  (resolved without action)")
+    print(f"  never at risk          {_rupees(never_at_risk_paise):>18}  (payment had succeeded)")
     print(f"  addressable at risk    {_rupees(addressable):>18}")
-    print(f"  settled via retry      {_rupees(recovered_paise):>18}")
+    print(f"  recovered              {_rupees(recovered_paise):>18}")
+    print(f"    settled via retry    {_rupees(retried_paise):>18}  (amount charged)")
+    print(f"    found already paid   {_rupees(reconciled_paise):>18}  (status query, no action)")
+    print(f"  discount given         {_rupees(discount_paise):>18}  (off retried payments)")
     print(f"  preserved by policy    {_rupees(blocked_paise):>18}")
     for label, outcome in (
         ("escalated", EventOutcome.ESCALATED),
         ("needs review", EventOutcome.NEEDS_REVIEW),
     ):
         print(f"  {label:<22} {_rupees(by_outcome.get(outcome.value, 0)):>18}")
+    print(
+        f"  no action yet          {_rupees(money['no_action_at_risk']):>18}"
+        "  (in flight, or cooling down after a failure)"
+    )
     if addressable:
         # Deliberately not called a recovery rate. In the mock gateway a retry
         # always succeeds, so this measures whether each payment reached its
@@ -322,9 +410,9 @@ def main() -> None:
     parser.add_argument("--dataset", type=Path, default=DATASET_PATH)
     parser.add_argument(
         "--failure-rate",
-        type=float,
+        type=failure_rate,
         default=GatewaySettings().webhook_delivery_failure_rate,
-        help="simulated webhook delivery failure rate",
+        help="simulated webhook delivery failure rate, between 0 and 1",
     )
     parser.add_argument(
         "--stub",

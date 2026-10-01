@@ -2790,7 +2790,7 @@
         "mandate_category": "utility",
         "opted_out": false,
         "retry_count": 1,
-        "discount_amount": 50000
+        "discount_amount": 0
       },
       "gateway_seed": {
         "setup": [
@@ -3310,7 +3310,7 @@
         "mandate_category": "general",
         "opted_out": false,
         "retry_count": 0,
-        "discount_amount": 50000
+        "discount_amount": 0
       },
       "gateway_seed": {
         "setup": [
@@ -5376,7 +5376,7 @@
         "mandate_category": "sip",
         "opted_out": false,
         "retry_count": 2,
-        "discount_amount": 50000
+        "discount_amount": 0
       },
       "gateway_seed": {
         "setup": [
@@ -8482,7 +8482,7 @@
         "mandate_category": "utility",
         "opted_out": false,
         "retry_count": 2,
-        "discount_amount": 50000
+        "discount_amount": 0
       },
       "gateway_seed": {
         "setup": [
@@ -12101,7 +12101,7 @@
         "mandate_category": "general",
         "opted_out": false,
         "retry_count": 1,
-        "discount_amount": 50000
+        "discount_amount": 0
       },
       "gateway_seed": {
         "setup": [
@@ -19492,7 +19492,7 @@
       "row_id": "row_0397",
       "bucket": "ambiguous",
       "scenario": "verify_mismatch_stale_success",
-      "intent": "delivered evidence reads FAILED at full confidence while the payment has already been captured; the retry cannot land and the row must be held for review rather than recorded as a recovery",
+      "intent": "delivered evidence reads FAILED at full confidence while the payment has already been captured; the retry's own status query must find it captured and stop before any write, holding the row for review rather than charging twice or recording a recovery",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0397",
@@ -19564,7 +19564,7 @@
       "row_id": "row_0398",
       "bucket": "ambiguous",
       "scenario": "verify_mismatch_stale_success",
-      "intent": "delivered evidence reads FAILED at full confidence while the payment has already been captured; the retry cannot land and the row must be held for review rather than recorded as a recovery",
+      "intent": "delivered evidence reads FAILED at full confidence while the payment has already been captured; the retry's own status query must find it captured and stop before any write, holding the row for review rather than charging twice or recording a recovery",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0398",
@@ -19636,7 +19636,7 @@
       "row_id": "row_0399",
       "bucket": "ambiguous",
       "scenario": "verify_mismatch_stale_success",
-      "intent": "delivered evidence reads FAILED at full confidence while the payment has already been captured; the retry cannot land and the row must be held for review rather than recorded as a recovery",
+      "intent": "delivered evidence reads FAILED at full confidence while the payment has already been captured; the retry's own status query must find it captured and stop before any write, holding the row for review rather than charging twice or recording a recovery",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0399",
@@ -19708,7 +19708,7 @@
       "row_id": "row_0400",
       "bucket": "ambiguous",
       "scenario": "verify_mismatch_stale_success",
-      "intent": "delivered evidence reads FAILED at full confidence while the payment has already been captured; the retry cannot land and the row must be held for review rather than recorded as a recovery",
+      "intent": "delivered evidence reads FAILED at full confidence while the payment has already been captured; the retry's own status query must find it captured and stop before any write, holding the row for review rather than charging twice or recording a recovery",
       "expected_policy_rule": null,
       "batch_event": {
         "payment_id": "pay_amb_0400",

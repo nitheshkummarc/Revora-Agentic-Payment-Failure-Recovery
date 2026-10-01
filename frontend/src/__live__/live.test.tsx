@@ -76,7 +76,7 @@ describe("dashboard against live data", () => {
     vi.stubGlobal("fetch", absoluteFetch(BACKEND));
 
     const loaded = await loadBatchResults(`?run=${runId}`);
-    expect(loaded.source).toBe("live-api");
+    expect(loaded.source).toBe("backend-api");
     expect(loaded.results.events).toHaveLength(500);
 
     render(<App load={() => loadBatchResults(`?run=${runId}`)} />);

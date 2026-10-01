@@ -29,8 +29,9 @@ class RecommendedAction(str, Enum):
     """The closed set of recovery actions.
 
     Only RETRY_SOFT moves money or re-attempts a customer's payment. The other
-    three read state or stop, which is why the injection guard in llm_client.py
-    treats RETRY_SOFT as the one action an untrusted note must never reach.
+    three read state or stop. A note flagged as an injection attempt always
+    ends at ESCALATE_HUMAN, so it reaches neither RETRY_SOFT nor a silent
+    close.
     """
 
     RETRY_SOFT = "RETRY_SOFT"
@@ -66,6 +67,8 @@ class SanitizationReport(StrictModel):
     sanitized_length: int
     truncated: bool
     control_characters_stripped: int
+    # Kinds of personal data redacted (e.g. "phone"), never the values.
+    pii_redacted: List[str] = Field(default_factory=list)
     injection_patterns_flagged: List[str] = Field(default_factory=list)
     looks_like_instruction: bool = False
 
@@ -100,6 +103,10 @@ class IntelligenceDecision(StrictModel):
     reasoning: str
 
     # --- how the decision was reached ---
+    # True only when a model answer was used. Otherwise short_circuit_reason
+    # says why: "tracer_ambiguous", or a fail-safe reason ("llm_call_failed",
+    # "llm_circuit_open", "llm_disabled_by_kill_switch",
+    # "no_llm_client_configured").
     llm_called: bool
     short_circuit_reason: Optional[str] = None
     guard_override_reason: Optional[str] = None
@@ -109,5 +116,6 @@ class IntelligenceDecision(StrictModel):
     untrusted_customer_note: str = ""
     sanitization: SanitizationReport
 
+    # The model that actually answered. None whenever `llm_called` is False.
     model: Optional[str] = None
     decided_at: datetime

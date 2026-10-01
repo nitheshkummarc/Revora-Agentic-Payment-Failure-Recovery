@@ -17,7 +17,7 @@ from datetime import datetime
 from enum import Enum
 from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from app.gateway.schemas import WebhookEvent
 from app.state_machine.states import CanonicalState
@@ -44,6 +44,9 @@ class ResolutionRule(str, Enum):
     # Reported as its own rule so the audit trail never calls an inconsistent
     # chain "clean".
     INCONSISTENT_EVENT_CHAIN = "inconsistent_event_chain"
+    # order.paid was delivered but no payment.captured confirms it. The two
+    # disagree, so neither is acted on until a status check settles it.
+    ORDER_PAID_UNCONFIRMED = "order_paid_unconfirmed"
 
 
 class ResolutionLogEntry(StrictModel):
@@ -65,10 +68,12 @@ class PaymentObservation(StrictModel):
     """
 
     payment_id: str
-    created_at: datetime
+    # Timezone-aware only: the silence rule subtracts these, and a naive value
+    # has no defined instant to subtract from an aware one.
+    created_at: AwareDatetime
     events: List[WebhookEvent] = Field(default_factory=list)
     # When the observation was taken. Defaults to "now" at resolve time.
-    observed_at: Optional[datetime] = None
+    observed_at: Optional[AwareDatetime] = None
 
 
 class StateResolution(StrictModel):

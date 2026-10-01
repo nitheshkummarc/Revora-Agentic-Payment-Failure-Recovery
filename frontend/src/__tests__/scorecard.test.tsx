@@ -41,27 +41,54 @@ function wrap(events: EventTrace[]): BatchResults {
 }
 
 describe("scorecard arithmetic", () => {
-  it("splits model use into three populations that account for every row", () => {
+  it("splits model use into four populations that account for every row", () => {
     const events = [
       makeEvent({ payment_id: "a", llm_called: true }),
       makeEvent({ payment_id: "b", llm_called: true }),
-      makeEvent({ payment_id: "c", llm_called: false }),
-      makeEvent({ payment_id: "d", llm_called: null, outcome: "no_action" }),
+      makeEvent({
+        payment_id: "c",
+        llm_called: false,
+        ambiguous: true,
+        short_circuit_reason: "tracer_ambiguous",
+        model: null,
+      }),
+      makeEvent({
+        payment_id: "d",
+        llm_called: false,
+        ambiguous: false,
+        short_circuit_reason: "llm_call_failed",
+        model: null,
+      }),
+      makeEvent({ payment_id: "e", llm_called: null, outcome: "no_action" }),
     ];
     const card = scorecard(wrap(events));
 
     expect(card.modelUse.reachedModel).toBe(2);
     expect(card.modelUse.shortCircuited).toBe(1);
+    expect(card.modelUse.failedSafe).toBe(1);
     expect(card.modelUse.neverConsulted).toBe(1);
-    // The three are mutually exclusive and exhaustive, which is what makes the
-    // two rates below comparable against the same denominator.
+    // Mutually exclusive and exhaustive, which is what makes the rates below
+    // comparable against the same denominator.
     expect(
       card.modelUse.reachedModel +
         card.modelUse.shortCircuited +
+        card.modelUse.failedSafe +
         card.modelUse.neverConsulted,
     ).toBe(events.length);
-    expect(card.modelUse.shortCircuitRate).toBeCloseTo(0.25);
-    expect(card.modelUse.neverConsultedRate).toBeCloseTo(0.25);
+    expect(card.modelUse.shortCircuitRate).toBeCloseTo(0.2);
+    expect(card.modelUse.failSafeRate).toBeCloseTo(0.2);
+    expect(card.modelUse.neverConsultedRate).toBeCloseTo(0.2);
+  });
+
+  it("does not count a provider failure as evidence too thin to ask", () => {
+    // Both decided without the model, but only an ambiguous trace is a choice.
+    const events = [
+      makeEvent({ payment_id: "a", llm_called: false, ambiguous: false, model: null }),
+      makeEvent({ payment_id: "b", llm_called: false, ambiguous: false, model: null }),
+    ];
+    const card = scorecard(wrap(events));
+    expect(card.modelUse.shortCircuited).toBe(0);
+    expect(card.modelUse.failedSafe).toBe(2);
   });
 
   it("measures the override rate against answers the model actually gave", () => {
@@ -77,7 +104,7 @@ describe("scorecard arithmetic", () => {
       }),
       // Short-circuited rows never gave the guard anything to override, so they
       // must not dilute the denominator.
-      makeEvent({ payment_id: "d", llm_called: false }),
+      makeEvent({ payment_id: "d", llm_called: false, ambiguous: true, model: null }),
     ];
     const card = scorecard(wrap(events));
 
@@ -147,10 +174,31 @@ describe("scorecard arithmetic", () => {
     expect(card.reconciliationPassed).toBe(false);
   });
 
-  it("never claims the run identified its model", () => {
-    const card = scorecard(wrap([makeEvent({ llm_called: true })]));
+  it("names the stub as the stub and says the figures are not model judgement", () => {
+    const card = scorecard(wrap([makeEvent({ llm_called: true, model: "stub-model" })]));
+    expect(card.provenance.recorded).toBe(true);
+    expect(card.provenance.stubOnly).toBe(true);
+    expect(card.provenance.label).toContain("StubLLMClient");
+    expect(card.provenance.detail).toContain("not of model judgement");
+  });
+
+  it("names a real model from the trace, not from a hardcoded guess", () => {
+    const card = scorecard(
+      wrap([
+        makeEvent({ payment_id: "a", model: "openai/gpt-oss-120b" }),
+        makeEvent({ payment_id: "b", model: "gemini-3.7-flash" }),
+      ]),
+    );
+    expect(card.provenance.stubOnly).toBe(false);
+    expect(card.provenance.models).toEqual(["openai/gpt-oss-120b", "gemini-3.7-flash"]);
+    expect(card.provenance.label).toBe("Model: openai/gpt-oss-120b, gemini-3.7-flash");
+    expect(card.provenance.detail).not.toContain("StubLLMClient");
+  });
+
+  it("says so plainly when a run does not record its model", () => {
+    const card = scorecard(wrap([makeEvent({ llm_called: true, model: null })]));
     expect(card.provenance.recorded).toBe(false);
-    expect(card.provenance.detail).toContain("StubLLMClient");
+    expect(card.provenance.label).toBe("Model not identified by this run");
   });
 });
 
@@ -161,7 +209,12 @@ describe("scorecard against the real run", () => {
 
     // Recomputed here from the raw fields, not via the scorecard's helpers.
     const reached = events.filter((e) => e.llm_called === true).length;
-    const shortCircuited = events.filter((e) => e.llm_called === false).length;
+    const shortCircuited = events.filter(
+      (e) => e.llm_called === false && e.short_circuit_reason === "tracer_ambiguous",
+    ).length;
+    const failedSafe = events.filter(
+      (e) => e.llm_called === false && e.short_circuit_reason !== "tracer_ambiguous",
+    ).length;
     const never = events.filter((e) => e.llm_called === null).length;
     const overridden = events.filter(
       (e) => e.original_llm_action !== null && e.original_llm_action !== undefined,
@@ -169,10 +222,11 @@ describe("scorecard against the real run", () => {
 
     expect(card.modelUse.reachedModel).toBe(reached);
     expect(card.modelUse.shortCircuited).toBe(shortCircuited);
+    expect(card.modelUse.failedSafe).toBe(failedSafe);
     expect(card.modelUse.neverConsulted).toBe(never);
     expect(card.modelUse.overridden).toBe(overridden);
     expect(card.modelUse.overrideRate).toBeCloseTo(overridden / reached);
-    expect(reached + shortCircuited + never).toBe(events.length);
+    expect(reached + shortCircuited + failedSafe + never).toBe(events.length);
   });
 
   it("agrees that every override carries both halves of the divergence", () => {
@@ -211,16 +265,16 @@ describe("AgentScorecard rendering", () => {
     );
     expect(screen.getByTestId("override-rate")).toBeInTheDocument();
     expect(screen.getByTestId("short-circuit-rate")).toBeInTheDocument();
+    expect(screen.getByTestId("fail-safe-rate")).toBeInTheDocument();
     expect(screen.getByTestId("never-consulted-rate")).toBeInTheDocument();
     expect(screen.getByTestId("injection-score")).toBeInTheDocument();
     expect(screen.getAllByTestId("check-pass")).toHaveLength(3);
   });
 
-  it("discloses that the run does not identify its model", () => {
+  it("discloses from the run's own data that the committed batch is a stub run", () => {
     render(<AgentScorecard results={real} />);
     const note = screen.getByTestId("model-provenance");
-    expect(note).toHaveTextContent("Model not identified by this run");
-    expect(note).toHaveTextContent("StubLLMClient");
+    expect(note).toHaveTextContent("Offline stub model (StubLLMClient)");
     // The disclosure must not read as a live-model evaluation.
     expect(note).toHaveTextContent("not of model judgement");
   });

@@ -6,13 +6,14 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  MONEY_MOVING_ACTIONS,
   enforcementSummary,
   formatCompactRupees,
   formatPercent,
   formatRupees,
   moneySummary,
 } from "../metrics";
-import { sampleResults } from "./fixtures";
+import { makeEvent, noAction, recovered, sampleResults } from "./fixtures";
 
 describe("money formatting", () => {
   it("renders paise as rupees", () => {
@@ -52,8 +53,82 @@ describe("money summary", () => {
     expect(money.needsReviewPaise).toBe(0);
   });
 
-  it("rates settled value against addressable value, not the whole batch", () => {
+  it("rates recovered value against addressable value, not the whole batch", () => {
+    expect(money.recoveredPaise).toBe(250000);
     expect(money.correctlyRoutedRate).toBeCloseTo(250000 / 15519800, 10);
+  });
+
+  it("does not count a status-query reconciliation as a retry", () => {
+    const reconciled = makeEvent({
+      payment_id: "pay_found_paid",
+      amount: 7000,
+      outcome: "recovered",
+      recommended_action: "REQUEST_VERIFICATION",
+      final_action: "REQUEST_VERIFICATION",
+      execution: {
+        action: "REQUEST_VERIFICATION",
+        gateway_called: true,
+        calls: ["GET /payments/{id}/status"],
+        expected_state: null,
+        detail: "status query returned CAPTURED",
+        cooldown_until: null,
+        succeeded: true,
+        reconciled: true,
+        idempotency_key: null,
+        charged_payment_id: null,
+        charged_amount: null,
+        discount_applied: null,
+      },
+      verification: null,
+    });
+    const split = moneySummary({ ...sampleResults, events: [recovered, reconciled] });
+    expect(split.recoveredPaise).toBe(257000);
+    expect(split.settledViaRetryPaise).toBe(250000);
+    expect(split.foundAlreadyPaidPaise).toBe(7000);
+  });
+
+  it("keeps cooldowns and in-flight payments in the addressable value", () => {
+    // no_action is not "never at risk": a cooldown after a failure and a
+    // payment still in flight are both no_action, and both are at risk.
+    const coolingDown = makeEvent({
+      payment_id: "pay_cooling",
+      amount: 9000,
+      outcome: "no_action",
+      resolved_state: "FAILED",
+      recommended_action: "NO_ACTION_COOLDOWN",
+      final_action: "NO_ACTION_COOLDOWN",
+    });
+    const inFlight = makeEvent({
+      payment_id: "pay_in_flight",
+      amount: 4000,
+      outcome: "no_action",
+      resolved_state: "CREATED",
+      recommended_action: null,
+    });
+    const split = moneySummary({
+      ...sampleResults,
+      events: [noAction, coolingDown, inFlight],
+    });
+    expect(split.neverAtRiskPaise).toBe(noAction.amount);
+    expect(split.noActionAtRiskPaise).toBe(13000);
+    expect(split.addressablePaise).toBe(13000);
+  });
+
+  it("counts what a retry charged and shows the discount apart", () => {
+    const discounted = makeEvent({
+      payment_id: "pay_discounted",
+      amount: 60000,
+      execution: {
+        ...recovered.execution!,
+        charged_payment_id: "pay_discounted_attempt1",
+        charged_amount: 10000,
+        discount_applied: 50000,
+      },
+    });
+    const split = moneySummary({ ...sampleResults, events: [discounted] });
+    expect(split.settledViaRetryPaise).toBe(10000);
+    expect(split.discountGivenPaise).toBe(50000);
+    expect(split.recoveredPaise).toBe(10000);
   });
 
   it("returns a zero rate rather than dividing by zero on an empty batch", () => {
@@ -112,11 +187,36 @@ describe("enforcement summary", () => {
             cooldown_until: null,
             succeeded: true,
             reconciled: null,
+            idempotency_key: null,
+            charged_payment_id: null,
+            charged_amount: null,
+            discount_applied: null,
           },
         },
       ],
       needs_human_review: [],
     });
     expect(tampered.unsafeActionsExecuted).toBe(1);
+  });
+});
+
+
+describe("frontend mirror of the backend's money-moving actions", () => {
+  it("matches MONEY_MOVING_ACTIONS in backend/app/intelligence/schemas.py", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const source = readFileSync(
+      resolve(__dirname, "../../../backend/app/intelligence/schemas.py"),
+      "utf-8",
+    );
+    const match = source.match(/MONEY_MOVING_ACTIONS\s*=\s*frozenset\(\{([^}]*)\}\)/);
+    expect(match).not.toBeNull();
+    const backend = new Set(
+      match![1]
+        .split(",")
+        .map((part) => part.trim().replace("RecommendedAction.", ""))
+        .filter(Boolean),
+    );
+    expect([...MONEY_MOVING_ACTIONS].sort()).toEqual([...backend].sort());
   });
 });

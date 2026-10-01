@@ -59,6 +59,7 @@ from app.gateway.schemas import (
     PaymentRecord,
     PaymentState,
     PaymentStatusResponse,
+    RetryPaymentRequest,
     SimulateWebhookRequest,
     SimulateWebhookResponse,
     SubscriptionRecord,
@@ -67,6 +68,7 @@ from app.gateway.schemas import (
     TransitionLogEntry,
     WebhookEvent,
     WebhookEventName,
+    event_identity,
 )
 
 logger = get_logger("gateway")
@@ -101,11 +103,28 @@ _PAYMENT_TRANSITIONS: Dict[WebhookEventName, Tuple[Optional[frozenset], Optional
     WebhookEventName.PAYMENT_DISPUTE_CREATED: (None, None),
 }
 
-_SUBSCRIPTION_TRANSITIONS: Dict[WebhookEventName, SubscriptionState] = {
-    WebhookEventName.SUBSCRIPTION_ACTIVATED: SubscriptionState.ACTIVE,
-    WebhookEventName.SUBSCRIPTION_CHARGED: SubscriptionState.ACTIVE,
-    WebhookEventName.SUBSCRIPTION_PENDING: SubscriptionState.PENDING,
-    WebhookEventName.SUBSCRIPTION_HALTED: SubscriptionState.HALTED,
+# (allowed source states, target). A charge can only succeed or fail on a
+# live subscription, and HALTED is terminal here because the event that
+# resumes a halted subscription is not modelled.
+_SUBSCRIPTION_TRANSITIONS: Dict[
+    WebhookEventName, Tuple[frozenset, SubscriptionState]
+] = {
+    WebhookEventName.SUBSCRIPTION_ACTIVATED: (
+        frozenset({SubscriptionState.CREATED}),
+        SubscriptionState.ACTIVE,
+    ),
+    WebhookEventName.SUBSCRIPTION_CHARGED: (
+        frozenset({SubscriptionState.ACTIVE, SubscriptionState.PENDING}),
+        SubscriptionState.ACTIVE,
+    ),
+    WebhookEventName.SUBSCRIPTION_PENDING: (
+        frozenset({SubscriptionState.ACTIVE, SubscriptionState.PENDING}),
+        SubscriptionState.PENDING,
+    ),
+    WebhookEventName.SUBSCRIPTION_HALTED: (
+        frozenset({SubscriptionState.PENDING}),
+        SubscriptionState.HALTED,
+    ),
 }
 
 
@@ -257,10 +276,21 @@ class SubscriptionLifecycle:
         sub = self._subscriptions.get(event.entity_id)
         if sub is None:
             return
-        target = _SUBSCRIPTION_TRANSITIONS.get(event.event)
-        if target is None:
+        rule = _SUBSCRIPTION_TRANSITIONS.get(event.event)
+        if rule is None:
             return
+        allowed, target = rule
         previous = sub.state
+        if previous not in allowed:
+            self._log_transition(
+                event.entity_id,
+                applied=False,
+                reason=f"illegal_transition_{previous.value}_to_{target.value}",
+                event=event,
+                from_state=previous.value,
+                to_state=target.value,
+            )
+            return
 
         if event.event is WebhookEventName.SUBSCRIPTION_CHARGED:
             sub.failed_charge_attempts = 0
@@ -325,6 +355,11 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _copies(items):
+    """Deep copies of stored records, so a caller cannot edit the store."""
+    return [item.model_copy(deep=True) for item in items]
+
+
 def _locked(method):
     """Serialise one public method call at a time on the same gateway
     instance.
@@ -354,7 +389,12 @@ class MockPaymentGateway:
     ) -> None:
         self.settings = settings or GATEWAY_SETTINGS
         self._clock = clock or _utcnow
+        # Never replaced: reset() runs while holding it.
         self._lock = threading.RLock()
+        self._init_state()
+
+    def _init_state(self) -> None:
+        """Every piece of mutable state, in its empty starting form."""
         self.payments: Dict[str, PaymentRecord] = {}
         self.subscriptions: Dict[str, SubscriptionRecord] = {}
         self.event_history: Dict[str, List[WebhookEvent]] = {}
@@ -363,10 +403,15 @@ class MockPaymentGateway:
             self.settings, self._clock, random.Random(self.settings.random_seed)
         )
         self._pending: List[ScheduledDelivery] = []
+        # Chaos-generated events (the flip) applied to truth at their
+        # occurred_at, whether or not their webhook is delivered.
+        self._pending_truth: List[WebhookEvent] = []
         self._sequence_counters: Dict[str, itertools.count] = {}
         self._applied_derived: Dict[str, set] = {}
         self._applied_truth: set = set()
         self._last_applied_sequence: Dict[str, int] = {}
+        # idempotency key -> (payment retried, payment charged)
+        self._retry_keys: Dict[str, Tuple[str, str]] = {}
         self._id_counter = itertools.count(1)
         self._subscription_lifecycle = SubscriptionLifecycle(
             subscriptions=self.subscriptions,
@@ -400,7 +445,7 @@ class MockPaymentGateway:
         Deliberately not arrival order: duplicate detection keys off the
         event's own timestamp and sequence, which are stable under reordering.
         """
-        return (event.entity_id, event.sequence, event.occurred_at.isoformat())
+        return event_identity(event)
 
     # -- logging ---------------------------------------------------------
     def _log_transition(
@@ -482,7 +527,7 @@ class MockPaymentGateway:
             from_state=None,
             to_state=PaymentState.CREATED.value,
         )
-        return record
+        return record.model_copy(deep=True)
 
     @_locked
     def capture_payment(self, request: CapturePaymentRequest) -> PaymentStatusResponse:
@@ -535,6 +580,122 @@ class MockPaymentGateway:
         return self.get_payment_status(record.payment_id)
 
     @_locked
+    def retry_payment(self, request: RetryPaymentRequest) -> PaymentStatusResponse:
+        """Run one recovery attempt and return the status of the payment charged.
+
+        A FAILED payment is retried as a new payment, `<id>_attempt<n>`, for
+        the original amount less any approved discount; the original stays
+        FAILED. An AUTHORIZED payment with no discount is captured as is.
+
+        Idempotent on `idempotency_key`: a repeated key returns the payment it
+        charged the first time. Refused if the payment or any earlier attempt
+        is already captured.
+        """
+        self.settle()
+        record = self._require_payment(request.payment_id)
+        key = request.idempotency_key
+
+        prior = self._retry_keys.get(key)
+        if prior is not None:
+            owner, charged_id = prior
+            if owner != request.payment_id:
+                raise IdempotencyConflictError(
+                    f"idempotency key {key!r} was already used for payment {owner}"
+                )
+            self._log_transition(
+                record.payment_id,
+                applied=False,
+                reason=f"recovery_retry_replayed:{key}",
+            )
+            return self.get_payment_status(charged_id)
+
+        attempts = [self.payments[pid] for pid in record.retry_attempt_ids]
+        if record.state is PaymentState.CAPTURED or any(
+            a.state is PaymentState.CAPTURED for a in attempts
+        ):
+            self._log_transition(
+                record.payment_id,
+                applied=False,
+                reason="illegal_retry_already_captured",
+                from_state=record.state.value,
+            )
+            raise IllegalTransitionError(
+                f"payment {record.payment_id} is already captured"
+            )
+        if record.state not in (PaymentState.FAILED, PaymentState.AUTHORIZED):
+            self._log_transition(
+                record.payment_id,
+                applied=False,
+                reason=f"illegal_retry_from_{record.state.value}",
+                from_state=record.state.value,
+            )
+            raise IllegalTransitionError(
+                f"cannot retry payment {record.payment_id} from state {record.state.value}"
+            )
+        if request.discount_amount >= record.amount:
+            raise InvalidRetryError(
+                f"discount {request.discount_amount} is not below the amount {record.amount}"
+            )
+
+        record.recovery_attempts += 1
+        if record.state is PaymentState.AUTHORIZED and request.discount_amount == 0:
+            charged = record
+        else:
+            charged = self._new_attempt(record, record.amount - request.discount_amount)
+            self._emit(
+                entity_id=charged.payment_id,
+                entity_type="payment",
+                event_name=WebhookEventName.PAYMENT_AUTHORIZED,
+                error=None,
+                chaos=None,
+            )
+        self._retry_keys[key] = (record.payment_id, charged.payment_id)
+        self._log_transition(
+            record.payment_id,
+            applied=True,
+            reason=(
+                f"recovery_retry_attempt_{record.recovery_attempts}:{key}"
+                f" -> {charged.payment_id}"
+            ),
+            from_state=record.state.value,
+        )
+        self._emit(
+            entity_id=charged.payment_id,
+            entity_type="payment",
+            event_name=WebhookEventName.PAYMENT_CAPTURED,
+            error=None,
+            chaos=None,
+        )
+        return self.get_payment_status(charged.payment_id)
+
+    def _new_attempt(self, original: PaymentRecord, amount: int) -> PaymentRecord:
+        now = self.now()
+        attempt_id = f"{original.payment_id}_attempt{len(original.retry_attempt_ids) + 1}"
+        attempt = PaymentRecord(
+            payment_id=attempt_id,
+            order_id=original.order_id,
+            amount=amount,
+            currency=original.currency,
+            state=PaymentState.CREATED,
+            webhook_derived_state=PaymentState.CREATED,
+            created_at=now,
+            updated_at=now,
+            subscription_id=original.subscription_id,
+            retry_of=original.payment_id,
+        )
+        self.payments[attempt_id] = attempt
+        self.event_history.setdefault(attempt_id, [])
+        self.transition_log.setdefault(attempt_id, [])
+        original.retry_attempt_ids.append(attempt_id)
+        self._log_transition(
+            attempt_id,
+            applied=True,
+            reason=f"payment_created_as_retry_of:{original.payment_id}",
+            to_state=PaymentState.CREATED.value,
+        )
+        return attempt
+
+    @_locked
     def simulate_webhook(self, request: SimulateWebhookRequest) -> SimulateWebhookResponse:
         self.settle()
         event_name = request.event
@@ -554,9 +715,12 @@ class MockPaymentGateway:
             error=request.error,
             chaos=request.chaos,
         )
-        delivered = [
-            sd.event for sd in plan.scheduled if sd.deliver_at <= self.now()
-        ]
+        # A due webhook can still fail delivery; only what reached the history
+        # counts as delivered, the rest is reported as dropped.
+        history_ids = {id(event) for event in self.event_history.get(request.entity_id, [])}
+        due = [sd.event for sd in plan.scheduled if sd.deliver_at <= self.now()]
+        delivered = [event for event in due if id(event) in history_ids]
+        undelivered = [event for event in due if id(event) not in history_ids]
         scheduled = [sd.event for sd in plan.scheduled if sd.deliver_at > self.now()]
 
         if entity_type == "payment":
@@ -570,9 +734,10 @@ class MockPaymentGateway:
         return SimulateWebhookResponse(
             entity_type=entity_type,
             entity_id=request.entity_id,
-            delivered=delivered,
-            dropped=list(plan.dropped),
-            scheduled=scheduled,
+            # Copies: scheduled events are still queued for delivery.
+            delivered=_copies(delivered),
+            dropped=_copies(list(plan.dropped) + undelivered),
+            scheduled=_copies(scheduled),
             current_state=current_state,
             webhook_derived_state=derived,
         )
@@ -583,10 +748,12 @@ class MockPaymentGateway:
         webhook chaos -- this is the disambiguation tool for later modules."""
         self.settle()
         record = self._require_payment(payment_id)
+        # Copies, so the snapshot reflects the time of the query.
         return PaymentStatusResponse(
-            payment=record,
-            event_history=list(self.event_history.get(payment_id, [])),
-            transition_log=list(self.transition_log.get(payment_id, [])),
+            payment=record.model_copy(deep=True),
+            retry_attempts=_copies(self.payments[pid] for pid in record.retry_attempt_ids),
+            event_history=_copies(self.event_history.get(payment_id, [])),
+            transition_log=_copies(self.transition_log.get(payment_id, [])),
             pending_webhook_count=sum(
                 1 for sd in self._pending if sd.event.entity_id == payment_id
             ),
@@ -599,9 +766,9 @@ class MockPaymentGateway:
         if sub is None:
             raise EntityNotFoundError(f"subscription {subscription_id} not found")
         return SubscriptionStatusResponse(
-            subscription=sub,
-            event_history=list(self.event_history.get(subscription_id, [])),
-            transition_log=list(self.transition_log.get(subscription_id, [])),
+            subscription=sub.model_copy(deep=True),
+            event_history=_copies(self.event_history.get(subscription_id, [])),
+            transition_log=_copies(self.transition_log.get(subscription_id, [])),
         )
 
     # -- emission / delivery ---------------------------------------------
@@ -643,6 +810,13 @@ class MockPaymentGateway:
             next_sequence=lambda: self._next_sequence(entity_id),
             new_event_id=self._event_id,
         )
+
+        # Chaos-generated events reach truth at their own occurred_at,
+        # independent of delivery (see _apply_due_truth).
+        for event in [sd.event for sd in plan.scheduled] + list(plan.dropped):
+            if event is primary or event.is_duplicate_delivery:
+                continue
+            self._pending_truth.append(event)
 
         for note in plan.notes:
             self._log_transition(entity_id, applied=False, reason=f"chaos:{note}")
@@ -687,9 +861,9 @@ class MockPaymentGateway:
                 return target.value
             record = self.payments.get(entity_id)
             return record.state.value if record else PaymentState.CREATED.value
-        target_sub = _SUBSCRIPTION_TRANSITIONS.get(event_name)
-        if target_sub is not None:
-            return target_sub.value
+        rule = _SUBSCRIPTION_TRANSITIONS.get(event_name)
+        if rule is not None:
+            return rule[1].value
         sub = self.subscriptions.get(entity_id)
         return sub.state.value if sub else SubscriptionState.CREATED.value
 
@@ -705,6 +879,8 @@ class MockPaymentGateway:
         # Re-read the queue each pass: delivering an event can enqueue another
         # one (a halt triggered by a late-arriving subscription.pending).
         while True:
+            # Truth first, so a webhook never lands ahead of its event.
+            self._apply_due_truth(current)
             due = [sd for sd in self._pending if sd.deliver_at <= current]
             if not due:
                 break
@@ -716,6 +892,18 @@ class MockPaymentGateway:
             self._subscription_lifecycle.drain_deferred_halts()
         self._subscription_lifecycle.drain_deferred_halts()
         return delivered
+
+    def _apply_due_truth(self, current: datetime) -> None:
+        """Apply every scheduled truth event whose `occurred_at` has passed,
+        in the order the events happened."""
+        due = [event for event in self._pending_truth if event.occurred_at <= current]
+        if not due:
+            return
+        self._pending_truth = [
+            event for event in self._pending_truth if event.occurred_at > current
+        ]
+        for event in sorted(due, key=lambda e: (e.occurred_at, e.sequence)):
+            self._apply_truth(event)
 
     def _deliver(self, event: WebhookEvent) -> bool:
         """Deliver one webhook through the retrying/circuit-broken client and
@@ -743,8 +931,7 @@ class MockPaymentGateway:
         # shows that a duplicate arrived and was ignored.
         self.event_history.setdefault(event.entity_id, []).append(event)
 
-        # Chaos-generated events (the flip) have not touched truth yet.
-        self._apply_truth(event)
+        # Truth is updated in _emit and _apply_due_truth, not on delivery.
         self._apply_derived(event)
         return True
 
@@ -787,6 +974,8 @@ class MockPaymentGateway:
         previous = record.state
         record.state = target
         record.updated_at = self.now()
+        if target is PaymentState.CAPTURED and record.captured_amount is None:
+            record.captured_amount = record.amount
         flip = previous is PaymentState.FAILED and target is PaymentState.AUTHORIZED
         self._log_transition(
             event.entity_id,
@@ -874,8 +1063,9 @@ class MockPaymentGateway:
 
     @_locked
     def reset(self) -> None:
-        """Wipe all state. Used between tests and demo runs."""
-        self.__init__(self.settings, self._clock)  # noqa: PLC2801
+        """Wipe all state, including the delivery RNG's position. Used between
+        tests and demo runs. The lock is kept -- see `__init__`."""
+        self._init_state()
 
     @_locked
     def reset_circuit(self) -> None:
@@ -897,6 +1087,14 @@ class EntityNotFoundError(LookupError):
 
 class IllegalTransitionError(RuntimeError):
     """Requested transition is not legal from the entity's current state."""
+
+
+class IdempotencyConflictError(RuntimeError):
+    """An idempotency key was reused for a different payment."""
+
+
+class InvalidRetryError(ValueError):
+    """A retry request that cannot be charged, e.g. a discount not below the amount."""
 
 
 # --------------------------------------------------------------------------
@@ -946,10 +1144,32 @@ def fail_payment(request: FailPaymentRequest) -> PaymentStatusResponse:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
+@router.post("/payments/retry", response_model=PaymentStatusResponse)
+def retry_payment(request: RetryPaymentRequest) -> PaymentStatusResponse:
+    try:
+        return get_gateway().retry_payment(request)
+    except EntityNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except (IllegalTransitionError, IdempotencyConflictError) as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except InvalidRetryError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
 @router.get("/payments/{payment_id}/status", response_model=PaymentStatusResponse)
 def payment_status(payment_id: str) -> PaymentStatusResponse:
     try:
         return get_gateway().get_payment_status(payment_id)
+    except EntityNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.get(
+    "/subscriptions/{subscription_id}/status", response_model=SubscriptionStatusResponse
+)
+def subscription_status(subscription_id: str) -> SubscriptionStatusResponse:
+    try:
+        return get_gateway().get_subscription_status(subscription_id)
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 

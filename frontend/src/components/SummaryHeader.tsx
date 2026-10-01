@@ -50,6 +50,12 @@ export default function SummaryHeader({ results, sourceDetail }: Props) {
           {enforcement.injectionAttemptsThatMovedMoney} produced a money-moving
           action.
         </p>
+        <p className="panel__note" data-testid="invariant-note">
+          Both counts check guarantees the pipeline enforces (a block stops
+          before Execute; a flagged note always reaches a person). They are
+          recomputed from this run; anything above zero means a guarantee
+          broke.
+        </p>
         <table className="rules" data-testid="rules-fired-table">
           <thead>
             <tr>
@@ -107,6 +113,15 @@ export default function SummaryHeader({ results, sourceDetail }: Props) {
             tone="recovered"
           />
           <Tile
+            label="Found already paid"
+            value={formatCompactRupees(money.foundAlreadyPaidPaise)}
+            tone="recovered"
+          />
+          <Tile
+            label="Discount given"
+            value={formatCompactRupees(money.discountGivenPaise)}
+          />
+          <Tile
             label="Preserved by policy"
             value={formatCompactRupees(money.preservedByPolicyPaise)}
             tone="blocked"
@@ -126,9 +141,10 @@ export default function SummaryHeader({ results, sourceDetail }: Props) {
           {formatPercent(money.correctlyRoutedRate)}
         </p>
         <p className="panel__note">
-          Share of addressable value that reached its correct decision. A retry
-          always succeeds against the mock gateway, so this measures routing and
-          guardrail enforcement, not retry success probability.
+          Share of addressable value recovered: the amount retries charged,
+          net of discounts, plus payments a status query found already paid.
+          A retry always succeeds against the mock gateway, so this measures
+          routing and guardrail enforcement, not retry success probability.
         </p>
       </section>
     </header>

@@ -109,3 +109,20 @@ class GeminiSettings(BaseModel):
 
 
 GEMINI_SETTINGS = GeminiSettings()
+
+
+class LLMCircuitSettings(BaseModel):
+    """Circuit breaker around the recommendation layer's model calls.
+
+    Local tuning choices with no external basis. After `failure_threshold`
+    consecutive failed calls the layer stops calling the model and fails safe
+    until `cooldown_seconds` have passed on the injected clock.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    failure_threshold: int = Field(default=5, ge=1)
+    cooldown_seconds: float = Field(default=60.0, ge=0.0)
+
+
+LLM_CIRCUIT_SETTINGS = LLMCircuitSettings()

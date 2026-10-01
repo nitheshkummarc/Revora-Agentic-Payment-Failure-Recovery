@@ -126,3 +126,81 @@ def test_seed_and_run_twice_in_one_process_is_reproducible(run_batch, monkeypatc
     first_outcomes = [(e.payment_id, e.outcome.value) for e in first.events]
     second_outcomes = [(e.payment_id, e.outcome.value) for e in second.events]
     assert first_outcomes == second_outcomes
+
+
+def _trace(
+    payment_id,
+    amount,
+    outcome,
+    recommended=None,
+    executed=None,
+    resolved=None,
+    charged=None,
+    discount=None,
+):
+    from datetime import datetime, timezone
+
+    from app.intelligence.schemas import RecommendedAction
+    from app.orchestrator.schemas import EventOutcome, EventTrace, ExecutionRecord
+    from app.state_machine.states import CanonicalState
+
+    return EventTrace(
+        batch_run_id="run",
+        payment_id=payment_id,
+        amount=amount,
+        currency="INR",
+        outcome=EventOutcome(outcome),
+        resolved_state=CanonicalState(resolved) if resolved else None,
+        recommended_action=RecommendedAction(recommended) if recommended else None,
+        execution=(
+            ExecutionRecord(
+                action=RecommendedAction(executed),
+                gateway_called=True,
+                detail="d",
+                charged_amount=charged,
+                discount_applied=discount,
+            )
+            if executed
+            else None
+        ),
+        processed_at=datetime(2026, 4, 21, tzinfo=timezone.utc),
+    )
+
+
+def test_only_payments_that_succeeded_are_never_at_risk(run_batch):
+    """A cooldown after a failure and a payment still in flight are both
+    no_action, and both are still at risk."""
+    money = run_batch.money_figures(
+        [
+            _trace("succeeded", 1000, "no_action", resolved="AUTHORIZED"),
+            _trace("cooling", 5000, "no_action", "NO_ACTION_COOLDOWN", resolved="FAILED"),
+            _trace("in_flight", 3000, "no_action", resolved="CREATED"),
+        ]
+    )
+    assert money["never_at_risk"] == 1000
+    assert money["no_action_at_risk"] == 8000
+    assert money["addressable"] == 8000
+
+
+def test_retry_money_is_what_was_charged_and_the_discount_is_shown_apart(run_batch):
+    money = run_batch.money_figures(
+        [
+            _trace("retried", 30000, "recovered", "RETRY_SOFT", "RETRY_SOFT",
+                   resolved="FAILED", charged=25000, discount=5000),
+            _trace("already_paid", 700, "recovered", "REQUEST_VERIFICATION",
+                   "REQUEST_VERIFICATION", resolved="PENDING_WEBHOOK"),
+        ]
+    )
+    assert money["settled_via_retry"] == 25000
+    assert money["discount_given"] == 5000
+    assert money["found_already_paid"] == 700
+    assert money["recovered"] == 25700
+    parts = (
+        money["settled_via_retry"]
+        + money["discount_given"]
+        + money["found_already_paid"]
+        + money["preserved_by_policy"]
+        + money["no_action_at_risk"]
+        + money["never_at_risk"]
+    )
+    assert parts == money["total"]

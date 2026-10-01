@@ -274,9 +274,10 @@ def test_silence_threshold_boundary_is_inclusive(resolver: StateResolver):
 
 
 def test_non_state_bearing_event_does_not_break_silence(resolver: StateResolver):
-    """order.paid carries no authorized/captured/failed signal, so the payment
-    is still silent for threshold purposes."""
-    event = make_event(WebhookEventName.ORDER_PAID, sequence=1, occurred_offset=5)
+    """payment.dispute.created carries no authorized/captured/failed signal,
+    so the payment is still silent for threshold purposes. (order.paid is not
+    used here: it signals success and has a rule of its own.)"""
+    event = make_event(WebhookEventName.PAYMENT_DISPUTE_CREATED, sequence=1, occurred_offset=5)
     result = resolver.resolve(
         event, created_at=START, observed_at=START + timedelta(seconds=400)
     )
@@ -550,3 +551,108 @@ def test_resolution_is_serialisable_for_the_audit_trail(resolver: StateResolver)
     assert isinstance(payload["resolution_confidence"], float)
     assert payload["resolution_log"][0]["rule"] == "late_authorization_flip"
     assert isinstance(result, StateResolution)
+
+
+# --------------------------------------------------------------------------
+# The resolver's transition table and the gateway's are kept separate on
+# purpose (different provenance), so nothing structural stops them drifting.
+# --------------------------------------------------------------------------
+def _as_values(table):
+    return {
+        event.value: (
+            None if allowed is None else sorted(state.value for state in allowed),
+            None if target is None else target.value,
+        )
+        for event, (allowed, target) in table.items()
+    }
+
+
+def test_resolver_and_gateway_transition_tables_agree():
+    """If the gateway could apply a transition the resolver calls illegal (or
+    the reverse), the resolver would flag clean evidence as inconsistent, or
+    accept evidence the gateway could never have produced."""
+    from app.gateway.mock_gateway import _PAYMENT_TRANSITIONS
+    from app.state_machine.states import _TRANSITIONS
+
+    assert _as_values(_TRANSITIONS) == _as_values(_PAYMENT_TRANSITIONS)
+
+
+
+def test_a_naive_timestamp_is_rejected_at_the_observation_boundary():
+    """The silence rule subtracts timestamps; a naive one would fail later as
+    an arithmetic error far from its cause, so it is refused up front --
+    including when passed as an override to resolve()."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        PaymentObservation(payment_id="pay_1", created_at=datetime(2026, 4, 21, 10, 0))
+
+    observation = PaymentObservation(payment_id="pay_1", created_at=START)
+    with pytest.raises(ValidationError):
+        StateResolver().resolve(observation, observed_at=datetime(2026, 4, 21, 10, 10))
+
+
+
+# --------------------------------------------------------------------------
+# order.paid without a confirming capture
+# --------------------------------------------------------------------------
+def _event(name, sequence, offset, error=None):
+    return WebhookEvent(
+        event_id=f"evt_pay_op_{sequence}",
+        entity_type="payment",
+        entity_id="pay_op",
+        event=name,
+        sequence=sequence,
+        occurred_at=START + timedelta(seconds=offset),
+        webhook_sent_at=START + timedelta(seconds=offset),
+        webhook_received_at=START + timedelta(seconds=offset),
+        resulting_state="CAPTURED",
+        error=error,
+    )
+
+
+def test_order_paid_alone_needs_a_status_check_not_the_silence_rule():
+    """Inside the silence window, order.paid alone used to read as an
+    ordinary in-progress payment."""
+    result = StateResolver().resolve(
+        [_event(WebhookEventName.ORDER_PAID, 1, 5)],
+        payment_id="pay_op",
+        created_at=START,
+        observed_at=START + timedelta(seconds=30),
+    )
+    assert result.state is CanonicalState.PENDING_WEBHOOK
+    assert result.needs_status_check is True
+    assert result.resolution_reason is ResolutionRule.ORDER_PAID_UNCONFIRMED
+    assert result.silence_seconds is None
+
+
+def test_order_paid_after_a_failure_is_not_read_as_a_failure():
+    """A delivered failure followed by order.paid must not be retried on the
+    strength of the failure alone."""
+    result = StateResolver().resolve(
+        [
+            _event(WebhookEventName.PAYMENT_FAILED, 1, 5),
+            _event(WebhookEventName.ORDER_PAID, 2, 40),
+        ],
+        payment_id="pay_op",
+        created_at=START,
+        observed_at=START + timedelta(seconds=60),
+    )
+    assert result.state is CanonicalState.PENDING_WEBHOOK
+    assert result.resolution_reason is ResolutionRule.ORDER_PAID_UNCONFIRMED
+    assert "resolve to FAILED" in result.resolution_detail
+
+
+def test_order_paid_with_a_capture_is_unremarkable():
+    result = StateResolver().resolve(
+        [
+            _event(WebhookEventName.PAYMENT_AUTHORIZED, 1, 5),
+            _event(WebhookEventName.PAYMENT_CAPTURED, 2, 6),
+            _event(WebhookEventName.ORDER_PAID, 3, 7),
+        ],
+        payment_id="pay_op",
+        created_at=START,
+        observed_at=START + timedelta(seconds=60),
+    )
+    assert result.state is CanonicalState.CAPTURED
+    assert result.resolution_reason is ResolutionRule.ORDERED_EVENT_CHAIN

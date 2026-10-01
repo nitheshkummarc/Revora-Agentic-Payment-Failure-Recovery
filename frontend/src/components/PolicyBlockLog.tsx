@@ -93,8 +93,11 @@ export default function PolicyBlockLog({ results, onSelect }: Props) {
                 <p className="blockcard__id">{event.payment_id}</p>
                 <p className="blockcard__reason">{event.blocked_reason}</p>
                 <p className="blockcard__override">
-                  LLM recommended <strong>{event.recommended_action}</strong> →
-                  final <strong>{event.final_action}</strong>
+                  {event.llm_called === true
+                    ? "Model recommended"
+                    : "Recommended (no model call)"}{" "}
+                  <strong>{event.recommended_action}</strong> → final{" "}
+                  <strong>{event.final_action}</strong>
                 </p>
               </button>
             </li>

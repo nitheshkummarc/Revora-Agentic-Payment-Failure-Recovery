@@ -120,8 +120,10 @@ class PolicyRun:
     escalated: Set[str] = field(default_factory=set)
     #: Payments whose action the policy refused outright.
     blocked: Set[str] = field(default_factory=set)
-    #: Mismatches the policy's own verification stage caught.
-    verification_failures: int = 0
+    #: Events the policy held for human review because it could not confirm
+    #: its own action -- a stage failed, or its check of gateway truth
+    #: contradicted the evidence it planned from.
+    held_for_review: int = 0
     unclassified: List[str] = field(default_factory=list)
 
 
@@ -255,11 +257,13 @@ def run_revora(dataset, failure_rate: float, rows):
         # `retried` means a money-moving attempt, so it is read from what the
         # Execute stage actually did. Reading it from the outcome instead would
         # count a REQUEST_VERIFICATION status query as a retry, which is the
-        # opposite of what that action is for.
+        # opposite of what that action is for. A RETRY_SOFT that stopped at its
+        # own status query -- because the gateway had already captured the
+        # payment -- made no write and is not an attempt either.
         if (
             event.execution is not None
             and event.execution.action is RecommendedAction.RETRY_SOFT
-            and event.execution.gateway_called
+            and any(call.startswith("POST ") for call in event.execution.calls)
         ):
             run.retried.add(pid)
         if event.outcome is EventOutcome.RECOVERED:
@@ -269,7 +273,7 @@ def run_revora(dataset, failure_rate: float, rows):
         elif event.outcome is EventOutcome.ESCALATED:
             run.escalated.add(pid)
         elif event.outcome is EventOutcome.NEEDS_REVIEW:
-            run.verification_failures += 1
+            run.held_for_review += 1
         # NO_ACTION is terminal and moves nothing.
 
     return run, prior, results
@@ -451,7 +455,7 @@ def report(runs, prior, reconciliations, divergences) -> None:
             ),
         ),
         ("correct escalations", lambda r: len(r.escalated)),
-        ("verification failures caught", lambda r: r.verification_failures),
+        ("held for review (unconfirmed)", lambda r: r.held_for_review),
     ]
     for label, fn in rows_out:
         line = f"  {label:<38}"
@@ -459,8 +463,8 @@ def report(runs, prior, reconciliations, divergences) -> None:
             line += f"{fn(run):>22}"
         print(line)
     print(
-        "\n  The naive policy has no verification stage at all, so its verification\n"
-        "  failures caught is 0 by construction, not by performing better."
+        "\n  The naive policy never checks gateway state before or after acting, so it\n"
+        "  holds nothing for review: 0 by construction, not by performing better."
     )
     print(
         "  The naive policy never blocks, so it has no safely_blocked equivalent.\n"
@@ -496,7 +500,7 @@ def main() -> None:
     parser.add_argument("--dataset", type=Path, default=DATASET_PATH)
     parser.add_argument(
         "--failure-rate",
-        type=float,
+        type=run_batch.failure_rate,
         default=GatewaySettings().webhook_delivery_failure_rate,
     )
     args = parser.parse_args()

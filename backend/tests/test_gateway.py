@@ -231,6 +231,18 @@ def test_fail_without_explicit_error_uses_documented_example(gateway: MockPaymen
 # --------------------------------------------------------------------------
 # Schema drift -- extra="forbid"
 # --------------------------------------------------------------------------
+def test_subscription_status_over_http(client: TestClient):
+    """A subscription that can be driven over HTTP can be queried over HTTP."""
+    assert client.get("/subscriptions/sub_http_1/status").status_code == 404
+    client.post(
+        "/webhooks/simulate",
+        json={"entity_id": "sub_http_1", "event": "subscription.activated"},
+    )
+    response = client.get("/subscriptions/sub_http_1/status")
+    assert response.status_code == 200
+    assert response.json()["subscription"]["state"] == "ACTIVE"
+
+
 def test_unknown_field_is_rejected_not_silently_accepted(client: TestClient):
     """A malformed-but-plausible payload must raise rather than pass through."""
     response = client.post(
@@ -524,11 +536,155 @@ def test_chaos_failed_authorized_flip_appends_to_history(
     assert flip_log[0].to_state == "AUTHORIZED"
 
 
+def test_flip_reaches_gateway_truth_even_when_its_webhook_is_dropped(
+    gateway: MockPaymentGateway, clock: FakeClock
+):
+    """Truth is what the gateway knows, not what the merchant was told. A
+    silently dropped flip must still move truth once its moment passes, or the
+    status query would confirm a failure that did not happen."""
+    _create(gateway)
+    gateway.fail_payment(
+        FailPaymentRequest(
+            payment_id="pay_test_1",
+            chaos=ChaosConfig(
+                modes=[ChaosMode.FAILED_AUTHORIZED_FLIP, ChaosMode.SILENT_DROP],
+                flip_after_seconds=30,
+            ),
+        )
+    )
+    assert gateway.get_payment_status("pay_test_1").payment.state is PaymentState.FAILED
+
+    clock.advance(30)
+    after = gateway.get_payment_status("pay_test_1")
+    assert after.payment.state is PaymentState.AUTHORIZED
+    # The merchant heard nothing: the failure and the flip were both dropped.
+    assert after.event_history == []
+    assert after.payment.webhook_derived_state is PaymentState.CREATED
+
+
+def test_flip_reaches_gateway_truth_when_delivery_always_fails(clock: FakeClock):
+    """Same guarantee under transport failure rather than a chaos drop."""
+    gateway = MockPaymentGateway(
+        settings=GatewaySettings(webhook_delivery_failure_rate=1.0), clock=clock
+    )
+    _create(gateway)
+    gateway.fail_payment(
+        FailPaymentRequest(
+            payment_id="pay_test_1",
+            chaos=ChaosConfig(
+                modes=[ChaosMode.FAILED_AUTHORIZED_FLIP], flip_after_seconds=30
+            ),
+        )
+    )
+    clock.advance(30)
+    after = gateway.get_payment_status("pay_test_1")
+    assert after.payment.state is PaymentState.AUTHORIZED
+    assert after.event_history == []
+
+
+def test_reset_keeps_the_same_lock_and_rewinds_state(gateway: MockPaymentGateway):
+    """Replacing the lock inside `reset` would let a thread already queued on
+    the old lock run concurrently with one taking the new lock."""
+    lock_before = gateway._lock
+    _create(gateway)
+    gateway.reset()
+    assert gateway._lock is lock_before
+    assert gateway.payments == {}
+    # The id counter and delivery RNG start over, so a reset gateway behaves
+    # exactly like a fresh one.
+    fresh = MockPaymentGateway(settings=gateway.settings, clock=gateway._clock)
+    assert gateway._new_payment_id() == fresh._new_payment_id()
+    assert gateway.delivery_client._rng.random() == fresh.delivery_client._rng.random()
+
+
+def test_status_snapshot_is_a_copy_not_the_live_record(
+    gateway: MockPaymentGateway,
+):
+    """A snapshot taken before an action must still read as it did before the
+    action -- a live reference would make any before/after comparison compare
+    an object with itself -- and a caller must not be able to edit the store."""
+    created = _create(gateway)
+    before = gateway.get_payment_status("pay_test_1")
+    assert before.payment is not gateway.payments["pay_test_1"]
+    assert created is not gateway.payments["pay_test_1"]
+
+    gateway.fail_payment(FailPaymentRequest(payment_id="pay_test_1"))
+    assert before.payment.state is PaymentState.CREATED
+
+    before.payment.state = PaymentState.CAPTURED
+    assert gateway.payments["pay_test_1"].state is PaymentState.FAILED
+
+    # The event history is the audit trail: editing a snapshot's copy must not
+    # rewrite the stored one.
+    after = gateway.get_payment_status("pay_test_1")
+    after.event_history[0].resulting_state = "CAPTURED"
+    assert gateway.event_history["pay_test_1"][0].resulting_state == "FAILED"
+    after.transition_log[0].reason = "edited"
+    assert gateway.transition_log["pay_test_1"][0].reason != "edited"
+
+
+def test_simulate_webhook_does_not_report_an_undeliverable_event_as_delivered(
+    clock: FakeClock,
+):
+    """A due webhook that exhausts its delivery attempts never reached the
+    merchant, so the response must not claim it did."""
+    gateway = MockPaymentGateway(
+        settings=GatewaySettings(webhook_delivery_failure_rate=1.0), clock=clock
+    )
+    _create(gateway)
+    response = gateway.simulate_webhook(
+        SimulateWebhookRequest(
+            entity_id="pay_test_1", event=WebhookEventName.PAYMENT_AUTHORIZED
+        )
+    )
+    assert response.delivered == []
+    assert [e.event_id for e in response.dropped] == ["evt_pay_test_1_1"]
+    assert gateway.get_payment_status("pay_test_1").event_history == []
+
+
+def test_flip_truth_waits_for_its_own_moment_under_a_delayed_webhook(
+    gateway: MockPaymentGateway, clock: FakeClock
+):
+    """A delayed webhook delays the merchant's view, not the fact itself."""
+    _create(gateway)
+    gateway.fail_payment(
+        FailPaymentRequest(
+            payment_id="pay_test_1",
+            chaos=ChaosConfig(
+                modes=[ChaosMode.FAILED_AUTHORIZED_FLIP, ChaosMode.DELAYED_WEBHOOK],
+                flip_after_seconds=10,
+                delay_seconds=40,
+            ),
+        )
+    )
+    clock.advance(10)
+    at_flip = gateway.get_payment_status("pay_test_1")
+    assert at_flip.payment.state is PaymentState.AUTHORIZED
+    assert at_flip.event_history == []  # both webhooks still in flight
+
+    clock.advance(40)
+    landed = gateway.get_payment_status("pay_test_1")
+    assert [e.event.value for e in landed.event_history] == [
+        "payment.failed",
+        "payment.authorized",
+    ]
+    assert landed.payment.webhook_derived_state is PaymentState.AUTHORIZED
+
+
 # --------------------------------------------------------------------------
 # Subscriptions: PENDING -> HALTED after exactly 3 failed charge attempts
 # --------------------------------------------------------------------------
+def _activate(gateway: MockPaymentGateway, subscription_id: str) -> None:
+    gateway.simulate_webhook(
+        SimulateWebhookRequest(
+            entity_id=subscription_id, event=WebhookEventName.SUBSCRIPTION_ACTIVATED
+        )
+    )
+
+
 def test_subscription_halts_after_three_failed_charges(gateway: MockPaymentGateway):
     """Subscriptions move to halted after exactly three charge-retry attempts."""
+    _activate(gateway, "sub_test_1")
     for attempt in (1, 2, 3):
         gateway.simulate_webhook(
             SimulateWebhookRequest(
@@ -544,6 +700,7 @@ def test_subscription_halts_after_three_failed_charges(gateway: MockPaymentGatew
     assert status.subscription.state is SubscriptionState.HALTED
     assert status.subscription.failed_charge_attempts == 3
     assert [e.event.value for e in status.event_history] == [
+        "subscription.activated",
         "subscription.pending",
         "subscription.pending",
         "subscription.pending",
@@ -554,6 +711,7 @@ def test_subscription_halts_after_three_failed_charges(gateway: MockPaymentGatew
 def test_duplicate_subscription_pending_does_not_double_count(
     gateway: MockPaymentGateway, clock: FakeClock
 ):
+    _activate(gateway, "sub_test_2")
     gateway.simulate_webhook(
         SimulateWebhookRequest(
             entity_id="sub_test_2",
@@ -567,6 +725,7 @@ def test_duplicate_subscription_pending_does_not_double_count(
 
 
 def test_subscription_charged_resets_failure_counter(gateway: MockPaymentGateway):
+    _activate(gateway, "sub_test_3")
     for _ in range(2):
         gateway.simulate_webhook(
             SimulateWebhookRequest(
@@ -998,3 +1157,223 @@ def test_capturing_an_already_captured_payment_is_rejected(gateway: MockPaymentG
     ]
     assert len(captured_events) == 1  # the rejected second call left no trace of a second capture
     assert status.payment.state is PaymentState.CAPTURED
+
+
+def test_a_silently_dropped_event_records_the_chaos_applied_to_it(
+    gateway: MockPaymentGateway,
+):
+    """The dropped event is the audit record of the silence, so it must carry
+    the mode that caused it."""
+    _create(gateway)
+    response = gateway.simulate_webhook(
+        SimulateWebhookRequest(
+            entity_id="pay_test_1",
+            event=WebhookEventName.PAYMENT_AUTHORIZED,
+            chaos=ChaosConfig(modes=[ChaosMode.SILENT_DROP]),
+        )
+    )
+    assert [e.chaos_modes for e in response.dropped] == [[ChaosMode.SILENT_DROP]]
+
+
+def test_an_empty_id_is_rejected_not_replaced(client: TestClient):
+    """An empty payment_id used to be read as "omitted" and a fresh id minted,
+    so the caller got back a payment under an id it never sent."""
+    assert client.post("/payments/create", json={"payment_id": "", "amount": 50000}).status_code == 422
+    assert (
+        client.post(
+            "/webhooks/simulate", json={"entity_id": "", "event": "subscription.activated"}
+        ).status_code
+        == 422
+    )
+
+
+
+# --------------------------------------------------------------------------
+# Recovery retry: idempotent on its key, counted on the payment
+# --------------------------------------------------------------------------
+def _retry(gateway, key, payment_id="pay_test_1", discount=0):
+    from app.gateway.schemas import RetryPaymentRequest
+
+    return gateway.retry_payment(
+        RetryPaymentRequest(payment_id=payment_id, idempotency_key=key, discount_amount=discount)
+    )
+
+
+def test_retrying_a_failed_payment_charges_a_new_attempt(gateway: MockPaymentGateway):
+    _create(gateway)
+    gateway.fail_payment(FailPaymentRequest(payment_id="pay_test_1"))
+    charged = _retry(gateway, "k1")
+
+    assert charged.payment.payment_id == "pay_test_1_attempt1"
+    assert charged.payment.retry_of == "pay_test_1"
+    assert charged.payment.state is PaymentState.CAPTURED
+    assert charged.payment.captured_amount == 50000
+    assert [e.event.value for e in charged.event_history] == [
+        "payment.authorized",
+        "payment.captured",
+    ]
+
+    original = gateway.get_payment_status("pay_test_1")
+    assert original.payment.state is PaymentState.FAILED
+    assert original.payment.recovery_attempts == 1
+    assert original.payment.retry_attempt_ids == ["pay_test_1_attempt1"]
+    assert [a.payment_id for a in original.retry_attempts] == ["pay_test_1_attempt1"]
+    assert [e.event.value for e in original.event_history] == ["payment.failed"]
+
+
+def test_an_approved_discount_comes_off_the_amount_charged(gateway: MockPaymentGateway):
+    _create(gateway)
+    gateway.fail_payment(FailPaymentRequest(payment_id="pay_test_1"))
+    charged = _retry(gateway, "k1", discount=5000)
+    assert charged.payment.amount == 45000
+    assert charged.payment.captured_amount == 45000
+
+
+def test_a_discount_not_below_the_amount_is_refused(gateway: MockPaymentGateway):
+    from app.gateway.mock_gateway import InvalidRetryError
+
+    _create(gateway)
+    gateway.fail_payment(FailPaymentRequest(payment_id="pay_test_1"))
+    with pytest.raises(InvalidRetryError):
+        _retry(gateway, "k1", discount=50000)
+    assert gateway.payments["pay_test_1"].recovery_attempts == 0
+    assert gateway.payments["pay_test_1"].retry_attempt_ids == []
+
+
+def test_an_authorized_payment_is_captured_rather_than_charged_again(
+    gateway: MockPaymentGateway,
+):
+    _create(gateway)
+    gateway.simulate_webhook(
+        SimulateWebhookRequest(entity_id="pay_test_1", event=WebhookEventName.PAYMENT_AUTHORIZED)
+    )
+    charged = _retry(gateway, "k1")
+    assert charged.payment.payment_id == "pay_test_1"
+    assert charged.payment.state is PaymentState.CAPTURED
+    assert gateway.payments["pay_test_1"].retry_attempt_ids == []
+
+
+def test_a_payment_that_has_not_failed_cannot_be_retried(gateway: MockPaymentGateway):
+    from app.gateway.mock_gateway import IllegalTransitionError
+
+    _create(gateway)
+    with pytest.raises(IllegalTransitionError):
+        _retry(gateway, "k1")
+
+
+def test_replaying_a_retry_key_does_not_charge_again(gateway: MockPaymentGateway):
+    """A duplicated or retried request with the same key returns the first
+    attempt's result: no new events, no new attempt counted."""
+    _create(gateway)
+    gateway.fail_payment(FailPaymentRequest(payment_id="pay_test_1"))
+    first = _retry(gateway, "k1")
+    replay = _retry(gateway, "k1")
+    assert replay.payment.payment_id == first.payment.payment_id
+    assert replay.payment.state is PaymentState.CAPTURED
+    assert len(replay.event_history) == len(first.event_history)
+    original = gateway.payments["pay_test_1"]
+    assert original.recovery_attempts == 1
+    assert original.retry_attempt_ids == ["pay_test_1_attempt1"]
+
+
+def test_a_retry_key_cannot_be_reused_for_another_payment(gateway: MockPaymentGateway):
+    from app.gateway.mock_gateway import IdempotencyConflictError
+
+    _create(gateway, payment_id="pay_a")
+    _create(gateway, payment_id="pay_b")
+    gateway.fail_payment(FailPaymentRequest(payment_id="pay_a"))
+    gateway.fail_payment(FailPaymentRequest(payment_id="pay_b"))
+    _retry(gateway, "shared", payment_id="pay_a")
+    with pytest.raises(IdempotencyConflictError):
+        _retry(gateway, "shared", payment_id="pay_b")
+    assert gateway.payments["pay_b"].state is PaymentState.FAILED
+
+
+def test_a_captured_payment_cannot_be_retried(gateway: MockPaymentGateway):
+    from app.gateway.mock_gateway import IllegalTransitionError
+
+    _create(gateway)
+    gateway.fail_payment(FailPaymentRequest(payment_id="pay_test_1"))
+    _retry(gateway, "k1")
+    with pytest.raises(IllegalTransitionError):
+        _retry(gateway, "k2")
+    assert gateway.payments["pay_test_1"].recovery_attempts == 1
+
+
+def test_retry_over_http_maps_errors_to_status_codes(client: TestClient):
+    client.post("/payments/create", json={"payment_id": "pay_http_r", "amount": 50000})
+    client.post("/payments/fail", json={"payment_id": "pay_http_r"})
+    ok = client.post("/payments/retry", json={"payment_id": "pay_http_r", "idempotency_key": "k"})
+    assert ok.status_code == 200
+    assert ok.json()["payment"]["state"] == "CAPTURED"
+    again = client.post("/payments/retry", json={"payment_id": "pay_http_r", "idempotency_key": "k2"})
+    assert again.status_code == 409
+    missing = client.post("/payments/retry", json={"payment_id": "nope", "idempotency_key": "k3"})
+    assert missing.status_code == 404
+
+
+
+def test_out_of_order_never_delivers_an_event_before_it_happens(
+    gateway: MockPaymentGateway, clock: FakeClock
+):
+    """Reversing arrival order must hold the earlier event back, not pull the
+    later one forward: a webhook cannot arrive before the fact it reports."""
+    _create(gateway)
+    gateway.fail_payment(
+        FailPaymentRequest(
+            payment_id="pay_test_1",
+            chaos=ChaosConfig(
+                modes=[ChaosMode.FAILED_AUTHORIZED_FLIP, ChaosMode.OUT_OF_ORDER_WEBHOOK],
+                flip_after_seconds=30,
+            ),
+        )
+    )
+    early = gateway.get_payment_status("pay_test_1")
+    assert early.event_history == []
+    assert early.payment.state is PaymentState.FAILED
+    assert early.payment.webhook_derived_state is not PaymentState.AUTHORIZED
+
+    clock.advance(31)
+    later = gateway.get_payment_status("pay_test_1")
+    for event in later.event_history:
+        assert event.webhook_received_at >= event.occurred_at
+    assert [e.sequence for e in later.event_history] == [2, 1]
+
+
+
+@pytest.mark.parametrize(
+    "setup, event",
+    [
+        ([], WebhookEventName.SUBSCRIPTION_PENDING),
+        ([], WebhookEventName.SUBSCRIPTION_CHARGED),
+        ([], WebhookEventName.SUBSCRIPTION_HALTED),
+        ([WebhookEventName.SUBSCRIPTION_ACTIVATED], WebhookEventName.SUBSCRIPTION_ACTIVATED),
+        ([WebhookEventName.SUBSCRIPTION_ACTIVATED], WebhookEventName.SUBSCRIPTION_HALTED),
+    ],
+)
+def test_illegal_subscription_events_are_recorded_but_change_nothing(
+    gateway: MockPaymentGateway, setup, event
+):
+    for earlier in setup:
+        gateway.simulate_webhook(SimulateWebhookRequest(entity_id="sub_x", event=earlier))
+    before = gateway.subscriptions["sub_x"].state if setup else SubscriptionState.CREATED
+    gateway.simulate_webhook(SimulateWebhookRequest(entity_id="sub_x", event=event))
+    status = gateway.get_subscription_status("sub_x")
+    assert status.subscription.state is before
+    assert status.subscription.failed_charge_attempts == 0
+    assert status.event_history[-1].event is event
+    assert status.transition_log[-1].applied is False
+    assert status.transition_log[-1].reason.startswith("illegal_transition_")
+
+
+def test_a_halted_subscription_stays_halted(gateway: MockPaymentGateway):
+    _activate(gateway, "sub_h")
+    for _ in range(3):
+        gateway.simulate_webhook(
+            SimulateWebhookRequest(entity_id="sub_h", event=WebhookEventName.SUBSCRIPTION_PENDING)
+        )
+    assert gateway.subscriptions["sub_h"].state is SubscriptionState.HALTED
+    gateway.simulate_webhook(
+        SimulateWebhookRequest(entity_id="sub_h", event=WebhookEventName.SUBSCRIPTION_CHARGED)
+    )
+    assert gateway.subscriptions["sub_h"].state is SubscriptionState.HALTED

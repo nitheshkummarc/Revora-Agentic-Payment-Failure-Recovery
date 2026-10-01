@@ -340,7 +340,11 @@ def test_kill_switch_disables_only_the_named_rule(engine, monkeypatch):
     aren't in the disablable `checks` list at all."""
     monkeypatch.setenv("REVORA_DISABLED_RULES", "MAX_DISCOUNT_EXCEEDED")
 
-    decision = engine.validate(llm(), context(discount_amount=500_000))  # Rs.5,000
+    # Rs.5,000 off a Rs.10,000 payment: over the cap, but below the amount.
+    decision = engine.validate(
+        llm(),
+        context(amount=1_000_000, mandate_ceiling=2_000_000, discount_amount=500_000),
+    )
 
     assert decision.approved is True
     disabled_eval = next(
@@ -392,22 +396,65 @@ def test_kill_switch_logs_unrecognised_names_separately(engine, monkeypatch, cap
     )
 
 
-def test_disablable_rule_ids_matches_the_checks_list(engine):
-    """DISABLABLE_RULE_IDS is a hand-kept copy of the rule_ids inside
-    validate()'s inline `checks` list -- this is what catches the two
-    drifting apart if a rule is ever added to or removed from `checks`."""
+#: One context per value rule that makes exactly that rule fire.
+_VALUE_RULE_TRIGGERS = {
+    "PRE_DEBIT_NOTICE_TOO_RECENT": dict(pre_debit_notice_sent_at=NOW - timedelta(hours=1)),
+    "MANDATE_CEILING_EXCEEDED": dict(amount=200_000, mandate_ceiling=100_000),
+    "AFA_REQUIRED_AND_MISSING": dict(
+        amount=2_000_000, mandate_ceiling=10_000_000, afa_flag=False
+    ),
+    "AFA_SIP_INSURANCE_REQUIRED_AND_MISSING": dict(
+        amount=15_000_000, mandate_ceiling=20_000_000, afa_flag=False, mandate_category="sip"
+    ),
+    "MAX_DISCOUNT_EXCEEDED": dict(discount_amount=500_000),
+    "DISCOUNT_EXCEEDS_AMOUNT": dict(amount=30_000, discount_amount=30_000),
+    "MAX_RETRIES_EXCEEDED": dict(retry_count=3),
+    "TRACE_CONFIDENCE_BELOW_THRESHOLD": dict(trace_confidence=0.1),
+}
+
+
+def test_disablable_rules_are_exactly_the_value_rules_that_do_not_cite_rbi(engine):
+    """The kill switch reaches only rules with no regulatory basis. Firing
+    every value rule and reading whether its block cites the circular holds
+    DISABLABLE_RULE_IDS to that line, so a new regulatory rule cannot become
+    switchable by being added to the wrong set."""
     from app.policy.engine import DISABLABLE_RULE_IDS
 
-    decision = engine.validate(llm(), context())
-    checked_rule_ids = {e.rule_id for e in decision.rules_evaluated}
-    non_disablable = {"CUSTOMER_OPTED_OUT"} | {
-        r for r in checked_rule_ids if r.startswith("MISSING_RBI_FIELD_")
-    }
-    assert DISABLABLE_RULE_IDS == checked_rule_ids - non_disablable
+    checked = {
+        e.rule_id for e in engine.validate(llm(), context()).rules_evaluated
+    } - {"CUSTOMER_OPTED_OUT"}
+    checked = {r for r in checked if not r.startswith("MISSING_RBI_FIELD_")}
+    assert set(_VALUE_RULE_TRIGGERS) == checked, "every value rule needs a trigger here"
+
+    non_regulatory = set()
+    for rule_id, overrides in _VALUE_RULE_TRIGGERS.items():
+        decision = engine.validate(llm(), context(**overrides))
+        assert decision.rule_id == rule_id
+        if R.RBI_CIRCULAR not in decision.blocked_reason:
+            non_regulatory.add(rule_id)
+    assert DISABLABLE_RULE_IDS == non_regulatory
+
+
+@pytest.mark.parametrize(
+    "rule_id",
+    [
+        "PRE_DEBIT_NOTICE_TOO_RECENT",
+        "MANDATE_CEILING_EXCEEDED",
+        "AFA_REQUIRED_AND_MISSING",
+        "AFA_SIP_INSURANCE_REQUIRED_AND_MISSING",
+    ],
+)
+def test_kill_switch_cannot_disable_a_regulatory_rule(engine, monkeypatch, rule_id):
+    monkeypatch.setenv("REVORA_DISABLED_RULES", rule_id)
+    decision = engine.validate(llm(), context(**_VALUE_RULE_TRIGGERS[rule_id]))
+    assert decision.approved is False
+    assert decision.rule_id == rule_id
 
 
 def test_discount_exactly_at_the_cap_is_allowed(engine):
-    decision = engine.validate(llm(), context(discount_amount=R.MAX_DISCOUNT_PAISE))
+    decision = engine.validate(
+        llm(), context(amount=100_000, discount_amount=R.MAX_DISCOUNT_PAISE)
+    )
     assert decision.approved is True
 
 
@@ -914,3 +961,37 @@ def test_a_debiting_action_can_only_carry_confidence_at_or_above_threshold():
             assert confidence >= R.MINIMUM_TRACE_CONFIDENCE, (
                 f"a debiting action escaped with confidence {confidence}"
             )
+
+
+def test_naive_pre_debit_notice_is_rejected_at_the_boundary():
+    """A naive timestamp has no defined instant to hold against the 24h rule.
+    Rejecting it when the context is built keeps the failure next to the bad
+    input instead of surfacing later as an arithmetic error in the engine."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        context(pre_debit_notice_sent_at=datetime(2026, 4, 19, 10, 0, 0))
+
+
+def test_naive_pre_debit_notice_is_rejected_on_the_batch_event_too():
+    from pydantic import ValidationError
+
+    from app.orchestrator.schemas import BatchEvent
+
+    with pytest.raises(ValidationError):
+        BatchEvent(
+            payment_id="pay_1",
+            amount=50000,
+            pre_debit_notice_sent_at=datetime(2026, 4, 19, 10, 0, 0),
+        )
+
+
+
+def test_a_discount_must_leave_something_to_charge(engine):
+    """A Rs.500 discount is within the cap but not on a Rs.299 payment."""
+    decision = engine.validate(llm(), context(amount=29_900, discount_amount=50_000))
+    assert decision.approved is False
+    assert decision.rule_id == "DISCOUNT_EXCEEDS_AMOUNT"
+
+    ok = engine.validate(llm(), context(amount=59_900, discount_amount=50_000))
+    assert ok.approved is True

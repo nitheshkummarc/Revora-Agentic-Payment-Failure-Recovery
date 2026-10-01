@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import List
 
-from app.intelligence.sanitizer import UNTRUSTED_BLOCK_TAG
+from app.intelligence.sanitizer import UNTRUSTED_BLOCK_TAG, clean_trace_text
 from app.tracer.schemas import TraceResult
 
 #: Frozen. Contains no interpolation of any kind -- see module docstring.
@@ -74,13 +74,14 @@ def build_user_content(trace: TraceResult, untrusted_customer_note: str) -> str:
         "",
         f"payment_id: {trace.payment_id}",
         f"resolved_state: {trace.resolved_state.value}",
-        f"root_cause: {trace.root_cause}",
+        f"root_cause: {clean_trace_text(trace.root_cause)}",
         f"causal_chain: {trace.causal_chain}",
         f"tracer_confidence: {trace.confidence}",
         f"ambiguous: {trace.ambiguous}",
     ]
     if trace.ambiguity_reasons:
-        lines.append(f"ambiguity_reasons: {trace.ambiguity_reasons}")
+        reasons = [clean_trace_text(reason) for reason in trace.ambiguity_reasons]
+        lines.append(f"ambiguity_reasons: {reasons}")
 
     lines.extend(
         [

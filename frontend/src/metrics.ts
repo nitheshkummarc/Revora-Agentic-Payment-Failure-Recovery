@@ -62,17 +62,41 @@ export interface EnforcementSummary {
 
 export interface MoneySummary {
   totalPaise: number;
+  /** no_action payments that had already succeeded (resolved AUTHORIZED/CAPTURED). */
   neverAtRiskPaise: number;
   addressablePaise: number;
+  /** Settled via retry plus found already paid. The rate uses this. */
+  recoveredPaise: number;
+  /** What the retries actually charged, net of discounts. */
   settledViaRetryPaise: number;
+  /** Discounts taken off retried payments. */
+  discountGivenPaise: number;
+  /** Recovered because a status query found the payment had succeeded. */
+  foundAlreadyPaidPaise: number;
   preservedByPolicyPaise: number;
   escalatedPaise: number;
   needsReviewPaise: number;
+  /** no_action payments still at risk: in flight, or cooling down after a failure. */
+  noActionAtRiskPaise: number;
   correctlyRoutedRate: number;
 }
 
-/** Actions that move money. A block on one of these is a block that mattered. */
-const MONEY_MOVING_ACTIONS = new Set(["RETRY_SOFT"]);
+/**
+ * Actions that move money. Mirrors MONEY_MOVING_ACTIONS in
+ * backend/app/intelligence/schemas.py; a test checks the two match.
+ */
+export const MONEY_MOVING_ACTIONS = new Set(["RETRY_SOFT"]);
+
+const SUCCEEDED_STATES = new Set(["AUTHORIZED", "CAPTURED"]);
+
+/** A no_action payment that had already succeeded and was never at risk. */
+function alreadySucceeded(event: EventTrace): boolean {
+  return (
+    event.outcome === "no_action" &&
+    event.resolved_state !== null &&
+    SUCCEEDED_STATES.has(event.resolved_state)
+  );
+}
 
 export function sumAmount(events: EventTrace[], outcome: Outcome): number {
   return events
@@ -118,22 +142,45 @@ export function enforcementSummary(results: BatchResults): EnforcementSummary {
 
 export function moneySummary(results: BatchResults): MoneySummary {
   const events = results.events;
-  const totalPaise = events.reduce((total, event) => total + event.amount, 0);
-  const neverAtRiskPaise = sumAmount(events, "no_action");
-  // A payment that never failed was never at risk, so counting it would
-  // inflate the rate with money that was never in question.
+  const sum = (keep: (event: EventTrace) => boolean) =>
+    events.filter(keep).reduce((total, event) => total + event.amount, 0);
+
+  const totalPaise = sum(() => true);
+  const neverAtRiskPaise = sum(alreadySucceeded);
   const addressablePaise = totalPaise - neverAtRiskPaise;
-  const settledViaRetryPaise = sumAmount(events, "recovered");
+
+  const retried = events.filter(
+    (event) =>
+      event.outcome === "recovered" && event.execution?.action === "RETRY_SOFT",
+  );
+  const settledViaRetryPaise = retried.reduce(
+    (total, event) => total + (event.execution?.charged_amount ?? event.amount),
+    0,
+  );
+  const discountGivenPaise = retried.reduce(
+    (total, event) => total + (event.execution?.discount_applied ?? 0),
+    0,
+  );
+  const foundAlreadyPaidPaise =
+    sumAmount(events, "recovered") -
+    retried.reduce((total, event) => total + event.amount, 0);
+  const recoveredPaise = settledViaRetryPaise + foundAlreadyPaidPaise;
 
   return {
     totalPaise,
     neverAtRiskPaise,
     addressablePaise,
+    recoveredPaise,
     settledViaRetryPaise,
+    discountGivenPaise,
+    foundAlreadyPaidPaise,
     preservedByPolicyPaise: sumAmount(events, "blocked"),
     escalatedPaise: sumAmount(events, "escalated"),
     needsReviewPaise: sumAmount(events, "needs_review"),
+    noActionAtRiskPaise: sum(
+      (event) => event.outcome === "no_action" && !alreadySucceeded(event),
+    ),
     correctlyRoutedRate:
-      addressablePaise > 0 ? settledViaRetryPaise / addressablePaise : 0,
+      addressablePaise > 0 ? recoveredPaise / addressablePaise : 0,
   };
 }

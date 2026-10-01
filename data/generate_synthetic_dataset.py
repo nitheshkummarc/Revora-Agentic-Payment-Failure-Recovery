@@ -317,9 +317,9 @@ HIGH_VALUE_AMOUNTS_PAISE = (
     4_999_900,  # Rs.49,999
 )
 
-#: Recorded on every row but not yet enforced. The AFA threshold is higher for
-#: SIP and insurance mandates than the general one; the policy engine has no
-#: rule reading this field, so it is carried rather than acted on.
+#: Recorded on every row and enforced: the policy engine applies the higher
+#: Rs.1 lakh AFA threshold to the categories the circular names (`sip` and
+#: `insurance` here) and the general Rs.15,000 threshold to everything else.
 MANDATE_CATEGORIES = ("general", "sip", "insurance", "utility")
 
 BENIGN_NOTES = (
@@ -432,8 +432,9 @@ def _compliant_batch_event(
     """A row that satisfies every policy rule.
 
     Violation rows are built by mutating exactly one field of this, so each one
-    isolates the rule it is named for: the engine returns on its first
-    violation, and a row carrying two would only ever prove the earlier rule.
+    isolates the rule it is named for: the engine decides on its first
+    violation in rule order, so a row carrying two would only ever prove the
+    earlier rule.
     """
     return {
         "payment_id": payment_id,
@@ -516,8 +517,13 @@ def build_standard_failures(count: int, rng: random.Random, start: int) -> List[
             note=note,
             # Below MAX_RETRIES, so these rows are retryable.
             retry_count=index % MAX_RETRIES,
-            # At or below the cap: the boundary value is allowed.
-            discount_amount=MAX_DISCOUNT_PAISE if index % 11 == 0 else 0,
+            # At the cap, which is allowed, but only where it leaves something
+            # to charge.
+            discount_amount=(
+                MAX_DISCOUNT_PAISE
+                if index % 11 == 0 and amount > MAX_DISCOUNT_PAISE
+                else 0
+            ),
             mandate_category=rng.choice(MANDATE_CATEGORIES),
         )
         rows.append(
@@ -542,10 +548,10 @@ def build_standard_failures(count: int, rng: random.Random, start: int) -> List[
 # --------------------------------------------------------------------------
 # Bucket: ambiguous states
 # --------------------------------------------------------------------------
-#: Rows at the end of the ambiguous bucket reserved for the stale-success case.
-#: Small on purpose: the row exists to prove the Verify stage refuses to record
-#: a recovery it cannot confirm, and a handful of rows demonstrates that as well
-#: as a hundred would while leaving the bucket's other sub-cases at full size.
+#: Rows at the end of the ambiguous bucket reserved for the stale-success case:
+#: a retry planned on stale evidence must not write to a captured payment.
+#: The scenario name predates that check moving from Verify to the retry's
+#: own status query; it is kept so results stay comparable.
 STALE_SUCCESS_ROWS = 4
 
 
@@ -586,9 +592,10 @@ def build_ambiguous(count: int, rng: random.Random, start: int) -> List[Dict[str
                           authorization and capture were both dropped. Delivered
                           evidence therefore reads FAILED with full confidence
                           while the gateway has already captured the payment.
-                          A retry planned on that evidence cannot land, and the
-                          row exists to prove the Verify stage refuses to record
-                          a recovery it could not confirm.
+                          The row exists to prove that a retry planned on that
+                          evidence checks the gateway before writing, finds the
+                          payment captured, and is held for review instead of
+                          charging twice.
 
     The two delay sub-cases are seeded in the `at_observation` phase. Seeding
     them earlier would let the delay elapse before the batch reads them, which
@@ -719,8 +726,9 @@ def build_ambiguous(count: int, rng: random.Random, start: int) -> List[Dict[str
             ]
             intent = (
                 "delivered evidence reads FAILED at full confidence while the payment "
-                "has already been captured; the retry cannot land and the row must be "
-                "held for review rather than recorded as a recovery"
+                "has already been captured; the retry's own status query must find it "
+                "captured and stop before any write, holding the row for review rather "
+                "than charging twice or recording a recovery"
             )
 
         rows.append(
@@ -748,9 +756,9 @@ def _violation_specs() -> List[Dict[str, Any]]:
     reaches it -- an ambiguous trace short-circuits to a non-debiting action
     before the value rules run.
 
-    Each spec mutates exactly one field of a compliant row. The engine returns
-    on its first violation, so a row carrying two would only ever prove the
-    earlier rule.
+    Each spec mutates exactly one field of a compliant row. The engine decides
+    on its first violation in rule order, so a row carrying two would only ever
+    prove the earlier rule.
     """
     return [
         {

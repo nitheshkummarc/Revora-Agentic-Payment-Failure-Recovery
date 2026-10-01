@@ -6,9 +6,9 @@
  * when it declined to, when the guard had to overrule the answer, and whether
  * the run's own arithmetic still adds up.
  *
- * The provenance line leads on purpose. Every rate below describes the
- * deterministic pipeline around the model, not the model's judgement, and a
- * reader who takes them for the latter has been misled by the layout.
+ * The provenance line leads on purpose: it names the model the run actually
+ * recorded, and for a stub run says outright that every rate below describes
+ * the deterministic pipeline around the model, not the model's judgement.
  */
 
 import type { BatchResults } from "../types";
@@ -44,6 +44,13 @@ export default function AgentScorecard({ results }: { results: BatchResults }) {
           value={formatPercent(modelUse.shortCircuitRate)}
           detail={`${modelUse.shortCircuited} of ${card.totalEvents} had evidence too thin to ask`}
           testId="short-circuit-rate"
+        />
+        <Stat
+          label="Model-unavailable rate"
+          value={formatPercent(modelUse.failSafeRate)}
+          detail={`${modelUse.failedSafe} of ${card.totalEvents} escalated because no model answer was available`}
+          testId="fail-safe-rate"
+          tone={modelUse.failedSafe > 0 ? "escalated" : undefined}
         />
         <Stat
           label="Never-consulted rate"

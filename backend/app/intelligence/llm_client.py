@@ -32,12 +32,15 @@ policy engine and orchestrator are the only components allowed to act on it.
 from __future__ import annotations
 
 import os
+import threading
 from datetime import datetime, timezone
 from typing import Callable, List, Optional, Protocol
 
 from app.core.config import (
     GEMINI_SETTINGS,
     GROQ_SETTINGS,
+    LLM_CIRCUIT_SETTINGS,
+    LLMCircuitSettings,
     env_flag,
 )
 from app.core.logging import get_logger, log_event
@@ -222,18 +225,22 @@ class FallbackLLMClient:
     always the primary's -- IntelligenceLayer reads it immediately after
     recommend() returns to record which model actually produced each
     decision, and reporting the primary's name for a call the fallback
-    answered would misattribute it.
+    answered would misattribute it. Tracked per thread.
     """
 
     def __init__(self, primary: LLMClient, fallback: LLMClient) -> None:
         self._primary = primary
         self._fallback = fallback
-        self.model = primary.model
+        self._last_answered = threading.local()
+
+    @property
+    def model(self) -> str:
+        return getattr(self._last_answered, "model", self._primary.model)
 
     def recommend(self, system_prompt: str, user_content: str) -> LLMRecommendation:
         try:
             result = self._primary.recommend(system_prompt, user_content)
-            self.model = self._primary.model
+            self._last_answered.model = self._primary.model
             return result
         except AssertionError:
             raise
@@ -247,7 +254,7 @@ class FallbackLLMClient:
                 error_type=type(exc).__name__,
             )
             result = self._fallback.recommend(system_prompt, user_content)
-            self.model = self._fallback.model
+            self._last_answered.model = self._fallback.model
             return result
 
 
@@ -304,9 +311,14 @@ class IntelligenceLayer:
         self,
         llm_client: Optional[LLMClient] = None,
         clock: Optional[Callable[[], datetime]] = None,
+        circuit: Optional[LLMCircuitSettings] = None,
     ) -> None:
         self._client = llm_client
         self._clock = clock or _utcnow
+        self._circuit = circuit or LLM_CIRCUIT_SETTINGS
+        self._circuit_lock = threading.Lock()
+        self._consecutive_failures = 0
+        self._circuit_opened_at: Optional[datetime] = None
 
     def recommend(self, request: IntelligenceInput) -> IntelligenceDecision:
         now = request.decided_at or self._clock()
@@ -323,11 +335,22 @@ class IntelligenceLayer:
         # 2. Ambiguity short-circuit. If the tracer could not build a confident
         #    chain, the model is not asked to guess in place of the missing
         #    data. No call is made at all.
+        #    A flagged note still goes to a person, as on the model path.
         # ------------------------------------------------------------------
         if request.trace.ambiguous:
+            action = RecommendedAction.REQUEST_VERIFICATION
+            injection_escalation: Optional[str] = None
+            if report.looks_like_instruction:
+                action = RecommendedAction.ESCALATE_HUMAN
+                injection_escalation = (
+                    "injection_guard: customer note matched instruction-like "
+                    f"pattern(s) {report.injection_patterns_flagged}; the "
+                    "deterministic REQUEST_VERIFICATION was replaced by "
+                    "ESCALATE_HUMAN so the attempt reaches a reviewer"
+                )
             decision = IntelligenceDecision(
                 payment_id=request.payment_id,
-                recommended_action=RecommendedAction.REQUEST_VERIFICATION,
+                recommended_action=action,
                 confidence=1.0,
                 reasoning=(
                     "Tracer reported ambiguous=true, so no LLM call was made. "
@@ -338,6 +361,7 @@ class IntelligenceLayer:
                 ),
                 llm_called=False,
                 short_circuit_reason="tracer_ambiguous",
+                guard_override_reason=injection_escalation,
                 untrusted_customer_note=note,
                 sanitization=report,
                 model=None,
@@ -368,12 +392,17 @@ class IntelligenceLayer:
                 reason="no_llm_client_configured",
             )
 
+        #    Breaker checked last: it only matters when a call would be made.
+        if self._circuit_is_open():
+            return self._fail_safe(request, note, report, now, reason="llm_circuit_open")
+
         user_content = build_user_content(request.trace, note)
         try:
             recommendation = self._client.recommend(SYSTEM_PROMPT, user_content)
         except AssertionError:
             raise
         except Exception as exc:  # provider error, validation error, timeout
+            self._record_call_failure()
             # The exception text (may carry request/response internals from the
             # SDK or network layer) is logged server-side only. reasoning and
             # short_circuit_reason reach the dashboard and the audit trail, so
@@ -388,64 +417,67 @@ class IntelligenceLayer:
             return self._fail_safe(
                 request, note, report, now, reason="llm_call_failed"
             )
+        self._record_call_success()
+        model = getattr(self._client, "model", None)
 
-        # ------------------------------------------------------------------
-        # 4. Deterministic safety guard. The delimited-block prompt design is
-        #    the primary defence against injection; this is a second layer that
-        #    does not depend on the model having obeyed it. A note that looked
-        #    like an instruction cannot produce a money-moving recommendation.
-        # ------------------------------------------------------------------
         action = recommendation.recommended_action
         override_reason: Optional[str] = None
         original_action: Optional[RecommendedAction] = None
 
+        # 4. Injection guard. A flagged note goes to a person whatever the
+        #    model answered. Recorded as an override only if it changed the
+        #    answer.
         if report.looks_like_instruction:
-            original_action = action
-            override_reason = (
-                "injection_guard: customer note matched instruction-like "
-                f"pattern(s) {report.injection_patterns_flagged}; recommendation "
-                f"overridden from {action.value} to ESCALATE_HUMAN"
-            )
-            action = RecommendedAction.ESCALATE_HUMAN
+            if action is not RecommendedAction.ESCALATE_HUMAN:
+                original_action = action
+                override_reason = (
+                    "injection_guard: customer note matched instruction-like "
+                    f"pattern(s) {report.injection_patterns_flagged}; recommendation "
+                    f"overridden from {action.value} (model confidence "
+                    f"{recommendation.confidence:.2f}) to ESCALATE_HUMAN"
+                )
+                action = RecommendedAction.ESCALATE_HUMAN
 
-        # ------------------------------------------------------------------
-        # 5. Grounding guard. A money-moving action must be backed by a real
-        #    error object, not just a model's say-so.
-        #
-        #    SCOPE, STATED PRECISELY: this checks only that
-        #    request.trace.grounded_error is not None -- i.e. that the tracer
-        #    supplied AN error object at all. It does not verify any
-        #    individual claim in `reasoning` against that object or against
-        #    the note; a model could still write something the trace never
-        #    established (e.g. "customer requested a refund") and this guard
-        #    would not catch it. "Grounded" here means "backed by a real
-        #    error object", not "every sentence in the reasoning is true" --
-        #    do not read it as the stronger claim.
-        #
-        #    UNREACHABLE ON THE NORMAL PIPELINE -- a backstop, not an
-        #    independently exercised rule. The tracer sets ambiguous=True
-        #    whenever a FAILED payment has no grounded error object
-        #    (tracer.py: "no_error_object_on_failure"), and an ambiguous trace
-        #    never reaches this method at all -- it short-circuits to
-        #    REQUEST_VERIFICATION in step 2, above. So `grounded_error` is
-        #    already guaranteed non-None by the time a debiting action gets
-        #    this far. Retained because that guarantee lives in a different
-        #    module: if the ambiguity rule ever narrows, this catches what it
-        #    no longer does.
-        # ------------------------------------------------------------------
+        # 5. Note-influence check. The pattern list only knows phrasings it has
+        #    seen, so a money-moving answer that came with an unflagged note
+        #    is asked again without the note. If the answer then does not move
+        #    money, the note is what moved it, and the case goes to a person.
+        elif action in MONEY_MOVING_ACTIONS and note:
+            without_note = self._recommend_without_note(request)
+            if without_note is None or without_note not in MONEY_MOVING_ACTIONS:
+                original_action = action
+                override_reason = (
+                    "note_influence_guard: "
+                    + (
+                        "the check without the customer note could not be completed"
+                        if without_note is None
+                        else f"without the customer note the model recommended "
+                        f"{without_note.value}"
+                    )
+                    + f"; with it, {action.value} (model confidence "
+                    f"{recommendation.confidence:.2f}). Escalated."
+                )
+                action = RecommendedAction.ESCALATE_HUMAN
+
+        # 6. Grounding guard: a money-moving action needs an error object
+        #    behind it. A backstop -- the tracer already marks an ungrounded
+        #    failure ambiguous, and ambiguous traces never reach this point.
         if action in MONEY_MOVING_ACTIONS and request.trace.grounded_error is None:
             original_action = original_action or action
             override_reason = (
                 "grounding_guard: recommendation "
-                f"{action.value} is money-moving but the trace carries no "
-                "grounded error object; overridden to ESCALATE_HUMAN"
+                f"{action.value} (model confidence {recommendation.confidence:.2f}) "
+                "is money-moving but the trace carries no grounded error object; "
+                "overridden to ESCALATE_HUMAN"
             )
             action = RecommendedAction.ESCALATE_HUMAN
 
         decision = IntelligenceDecision(
             payment_id=request.payment_id,
             recommended_action=action,
-            confidence=recommendation.confidence,
+            # A guard's replacement is deterministic, so it is stated at 1.0;
+            # the model's own figure stays in guard_override_reason.
+            confidence=1.0 if original_action is not None else recommendation.confidence,
             reasoning=recommendation.reasoning,
             llm_called=True,
             short_circuit_reason=None,
@@ -453,11 +485,73 @@ class IntelligenceLayer:
             original_llm_action=original_action,
             untrusted_customer_note=note,
             sanitization=report,
-            model=getattr(self._client, "model", None),
+            model=model,
             decided_at=now,
         )
         self._log(decision)
         return decision
+
+    def _recommend_without_note(
+        self, request: IntelligenceInput
+    ) -> Optional[RecommendedAction]:
+        """The model's action for the same trace with the note left empty, or
+        None if the call failed."""
+        try:
+            result = self._client.recommend(
+                SYSTEM_PROMPT, build_user_content(request.trace, "")
+            )
+        except AssertionError:
+            raise
+        except Exception as exc:
+            self._record_call_failure()
+            log_event(
+                logger,
+                "llm_note_influence_check_failed",
+                payment_id=request.payment_id,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            return None
+        self._record_call_success()
+        return result.recommended_action
+
+    # -- circuit breaker ---------------------------------------------------
+    def _circuit_is_open(self) -> bool:
+        """Whether calls are currently being skipped.
+
+        Once the cooldown has elapsed the breaker lets one call through
+        (half-open): the failure count is left one short of the threshold, so
+        a single further failure reopens it, while a success closes it fully.
+        """
+        with self._circuit_lock:
+            if self._circuit_opened_at is None:
+                return False
+            elapsed = (self._clock() - self._circuit_opened_at).total_seconds()
+            if elapsed < self._circuit.cooldown_seconds:
+                return True
+            self._circuit_opened_at = None
+            self._consecutive_failures = self._circuit.failure_threshold - 1
+            log_event(logger, "llm_circuit_half_open", elapsed_seconds=elapsed)
+            return False
+
+    def _record_call_failure(self) -> None:
+        with self._circuit_lock:
+            self._consecutive_failures += 1
+            if (
+                self._circuit_opened_at is None
+                and self._consecutive_failures >= self._circuit.failure_threshold
+            ):
+                self._circuit_opened_at = self._clock()
+                log_event(
+                    logger,
+                    "llm_circuit_opened",
+                    consecutive_failures=self._consecutive_failures,
+                    cooldown_seconds=self._circuit.cooldown_seconds,
+                )
+
+    def _record_call_success(self) -> None:
+        with self._circuit_lock:
+            self._consecutive_failures = 0
 
     # -- helpers -----------------------------------------------------------
     def _fail_safe(
@@ -487,7 +581,8 @@ class IntelligenceLayer:
             short_circuit_reason=reason,
             untrusted_customer_note=note,
             sanitization=report,
-            model=getattr(self._client, "model", None) if self._client else None,
+            # No model answered, whether or not one was tried.
+            model=None,
             decided_at=now,
         )
         self._log(decision)

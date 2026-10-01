@@ -11,6 +11,7 @@ import userEvent from "@testing-library/user-event";
 
 import EventFeed from "../components/EventFeed";
 import PolicyBlockLog from "../components/PolicyBlockLog";
+import ReviewQueue, { queueRows, reviewQueueCsv } from "../components/ReviewQueue";
 import SummaryHeader from "../components/SummaryHeader";
 import TraceView, { traceJson } from "../components/TraceView";
 import {
@@ -224,6 +225,39 @@ describe("TraceView", () => {
     expect(screen.getByTestId("stage-state")).toHaveTextContent("AUTHORIZED");
     expect(screen.getByTestId("stage-policy").className).toContain("stage--skipped");
   });
+
+  it("does not label a decision made without the model as the model's", () => {
+    render(<TraceView event={escalated} />);
+    const policy = screen.getByTestId("stage-policy");
+    expect(policy).toHaveTextContent("Recommended (no model call)");
+    expect(policy).not.toHaveTextContent("Model recommended");
+    expect(policy).toHaveTextContent("tracer_ambiguous");
+  });
+
+  it("names the model that answered", () => {
+    render(<TraceView event={recovered} />);
+    const policy = screen.getByTestId("stage-policy");
+    expect(policy).toHaveTextContent("Model recommended");
+    expect(policy).toHaveTextContent("stub-model");
+  });
+
+  it("explains an unexecuted event by the stage that stopped it, not as a block", () => {
+    const stopped = makeEvent({
+      payment_id: "pay_stopped",
+      outcome: "needs_review",
+      approved: null,
+      final_action: null,
+      failed_stage: "observe",
+      needs_review_reason: "payment pay_stopped not found",
+      execution: null,
+      verification: null,
+    });
+    render(<TraceView event={stopped} />);
+    const note = screen.getByTestId("no-execution");
+    expect(note).toHaveTextContent("stopped at the observe stage");
+    expect(note).not.toHaveTextContent("block");
+  });
+
 });
 
 describe("PolicyBlockLog", () => {
@@ -292,6 +326,7 @@ describe("SummaryHeader", () => {
     const money = screen.getByTestId("money-panel");
     expect(money).toHaveTextContent("Money moved through verified-safe paths");
     expect(money).toHaveTextContent("Settled via retry");
+    expect(money).toHaveTextContent("Found already paid");
     expect(money).toHaveTextContent("Preserved by policy");
     expect(money.textContent).not.toMatch(/recovered by/i);
   });
@@ -317,5 +352,152 @@ describe("SummaryHeader", () => {
     expect(screen.getByTestId("results-source")).toHaveTextContent(
       "6 events · committed snapshot",
     );
+  });
+});
+
+
+describe("TraceView: guard, redaction and verification detail", () => {
+  it("shows a guard escalation that replaced a status check, with no model answer", () => {
+    const flaggedAmbiguous = makeEvent({
+      payment_id: "pay_flagged_ambiguous",
+      outcome: "escalated",
+      ambiguous: true,
+      llm_called: false,
+      short_circuit_reason: "tracer_ambiguous",
+      model: null,
+      recommended_action: "ESCALATE_HUMAN",
+      final_action: "ESCALATE_HUMAN",
+      injection_patterns_flagged: ["ignore_previous_instructions"],
+      original_llm_action: null,
+      guard_override_reason: "injection_guard: replaced REQUEST_VERIFICATION",
+      execution: null,
+      verification: null,
+    });
+    render(<TraceView event={flaggedAmbiguous} />);
+    expect(screen.getByTestId("guard-escalation")).toHaveTextContent(
+      "injection_guard: replaced REQUEST_VERIFICATION",
+    );
+    expect(screen.queryByTestId("guard-override")).not.toBeInTheDocument();
+  });
+
+  it("names the kinds of personal data redacted, never values", () => {
+    render(<TraceView event={makeEvent({ pii_redacted: ["email", "phone"] })} />);
+    expect(screen.getByTestId("stage-policy")).toHaveTextContent("email, phone");
+  });
+
+  it("shows the retry's idempotency key", () => {
+    const retried = makeEvent({
+      execution: {
+        ...recovered.execution!,
+        idempotency_key: "revora-retry:pay_1:1",
+      },
+    });
+    render(<TraceView event={retried} />);
+    expect(screen.getByTestId("stage-action")).toHaveTextContent("revora-retry:pay_1:1");
+  });
+
+  it("explains a verification that had nothing to re-read", () => {
+    const viaStatusQuery = makeEvent({
+      verification: {
+        performed: false,
+        expected_state: null,
+        observed_state: null,
+        matched: null,
+        detail: "REQUEST_VERIFICATION is itself the status query",
+      },
+    });
+    render(<TraceView event={viaStatusQuery} />);
+    const verify = screen.getByTestId("verification");
+    expect(verify).toHaveTextContent("itself the status query");
+    expect(verify).not.toHaveTextContent("expected -");
+  });
+});
+
+describe("ReviewQueue", () => {
+  it("lists every review item joined to its outcome", () => {
+    render(<ReviewQueue results={sampleResults} onSelect={vi.fn()} />);
+    expect(screen.getByTestId("review-row-pay_escalated")).toHaveTextContent("Escalated");
+    expect(screen.getByTestId("review-summary")).toHaveTextContent("1 of 1 item(s)");
+  });
+
+  it("filters by outcome and says so when a filter is empty", async () => {
+    const user = userEvent.setup();
+    render(<ReviewQueue results={sampleResults} onSelect={vi.fn()} />);
+    await user.click(screen.getByTestId("review-filter-blocked"));
+    expect(screen.getByTestId("review-empty")).toBeInTheDocument();
+    await user.click(screen.getByTestId("review-filter-escalated"));
+    expect(screen.getByTestId("review-row-pay_escalated")).toBeInTheDocument();
+  });
+
+  it("opens the item's full trace", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    render(<ReviewQueue results={sampleResults} onSelect={onSelect} />);
+    await user.click(screen.getByTestId("review-row-pay_escalated"));
+    expect(onSelect).toHaveBeenCalledWith(
+      expect.objectContaining({ payment_id: "pay_escalated" }),
+    );
+  });
+
+  it("states when no action was decided rather than inventing one", () => {
+    const results = {
+      ...sampleResults,
+      needs_human_review: [
+        {
+          payment_id: "pay_escalated",
+          amount: 99900,
+          reason: "payment pay_escalated not found",
+          final_action: null,
+          root_cause: null,
+          blocked_reason: null,
+        },
+      ],
+    };
+    render(<ReviewQueue results={results} onSelect={vi.fn()} />);
+    expect(screen.getByTestId("review-row-pay_escalated")).toHaveTextContent(
+      "none decided",
+    );
+  });
+
+  it("exports CSV with quoted cells, so commas and quotes survive", () => {
+    const results = {
+      ...sampleResults,
+      needs_human_review: [
+        {
+          payment_id: "pay_escalated",
+          amount: 99900,
+          reason: 'status query returned "FAILED", escalated',
+          final_action: "REQUEST_VERIFICATION" as const,
+          root_cause: null,
+          blocked_reason: null,
+        },
+      ],
+    };
+    const csv = reviewQueueCsv(queueRows(results));
+    const [header, row] = csv.split("\r\n");
+    expect(header).toBe(
+      '"payment_id","outcome","final_action","amount_rupees","amount_paise","reason","root_cause"',
+    );
+    expect(row).toBe(
+      '"pay_escalated","escalated","REQUEST_VERIFICATION","999.00","99900","status query returned ""FAILED"", escalated",""',
+    );
+  });
+});
+
+describe("TraceView: retry charge", () => {
+  it("names the payment charged and the discount taken off", () => {
+    const discounted = makeEvent({
+      execution: {
+        ...recovered.execution!,
+        charged_payment_id: "pay_1_attempt1",
+        charged_amount: 40000,
+        discount_applied: 10000,
+      },
+    });
+    render(<TraceView event={discounted} />);
+    const action = screen.getByTestId("stage-action");
+    expect(action).toHaveTextContent("pay_1_attempt1");
+    expect(action).toHaveTextContent("₹400.00");
+    expect(action).toHaveTextContent("after ₹100.00 discount");
   });
 });

@@ -38,6 +38,14 @@ export default function EventFeed({
 }: Props) {
   const [filter, setFilter] = useState<Outcome | "all">("all");
 
+  const counts = useMemo(() => {
+    const byOutcome = new Map<Outcome, number>();
+    for (const event of results.events) {
+      byOutcome.set(event.outcome, (byOutcome.get(event.outcome) ?? 0) + 1);
+    }
+    return byOutcome;
+  }, [results.events]);
+
   const visible = useMemo(
     () =>
       filter === "all"
@@ -60,9 +68,7 @@ export default function EventFeed({
             All ({results.events.length})
           </button>
           {OUTCOME_ORDER.map((outcome) => {
-            const count = results.events.filter(
-              (event) => event.outcome === outcome,
-            ).length;
+            const count = counts.get(outcome) ?? 0;
             return (
               <button
                 key={outcome}

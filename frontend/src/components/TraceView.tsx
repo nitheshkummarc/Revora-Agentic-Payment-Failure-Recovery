@@ -11,7 +11,7 @@
  * specific case, that is one click instead of scrolling a log live.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { EventTrace } from "../types";
 import { formatRupees } from "../metrics";
 import { OUTCOME_LABELS } from "./EventFeed";
@@ -27,6 +27,17 @@ export function traceJson(event: EventTrace): string {
 export default function TraceView({ event }: Props) {
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState<string | null>(null);
+  const copiedTimer = useRef<number | null>(null);
+
+  // Copy feedback belongs to the event it was given for: the parent keys this
+  // component by payment id, so selecting another event starts it fresh. A
+  // pending "Copied" timer is not left to fire after unmount.
+  useEffect(
+    () => () => {
+      if (copiedTimer.current !== null) window.clearTimeout(copiedTimer.current);
+    },
+    [],
+  );
 
   if (!event) {
     return (
@@ -49,7 +60,8 @@ export default function TraceView({ event }: Props) {
       await navigator.clipboard.writeText(traceJson(event));
       setCopied(true);
       setCopyError(null);
-      window.setTimeout(() => setCopied(false), 2000);
+      if (copiedTimer.current !== null) window.clearTimeout(copiedTimer.current);
+      copiedTimer.current = window.setTimeout(() => setCopied(false), 2000);
     } catch (error) {
       // Clipboard access can be refused outright. Say so rather than showing a
       // success state for something that did not happen.
@@ -144,12 +156,28 @@ export default function TraceView({ event }: Props) {
               tone="warn"
             />
           ) : (
-            <Field label="LLM recommended" value={event.recommended_action} />
+            <Field
+              // Only a model answer is labelled as one. A short-circuit or a
+              // fail-safe decided without the model.
+              label={
+                event.llm_called === true
+                  ? "Model recommended"
+                  : "Recommended (no model call)"
+              }
+              value={event.recommended_action}
+            />
           )}
           <Field
             label="Model called"
             value={event.llm_called === null ? null : String(event.llm_called)}
           />
+          <Field label="Model" value={event.model ?? null} />
+          {event.llm_called === false && (
+            <Field
+              label="Decided without the model because"
+              value={event.short_circuit_reason ?? null}
+            />
+          )}
           {event.injection_patterns_flagged.length > 0 && (
             <Field
               label="Injection patterns"
@@ -157,11 +185,28 @@ export default function TraceView({ event }: Props) {
               tone="warn"
             />
           )}
+          {event.pii_redacted.length > 0 && (
+            <Field
+              label="Personal data redacted"
+              value={event.pii_redacted.join(", ")}
+            />
+          )}
           {overridden && (
             <div className="block" data-testid="guard-override">
               <p className="block__rule">
                 Safety guard overrode the model:{" "}
                 <code>{event.original_llm_action}</code> →{" "}
+                <code>{event.recommended_action}</code>
+              </p>
+              <p className="block__reason">{event.guard_override_reason}</p>
+            </div>
+          )}
+          {!overridden && event.guard_override_reason && (
+            // No model answered (an ambiguous trace), but a flagged note
+            // still sent the case to a person instead of a status check.
+            <div className="block" data-testid="guard-escalation">
+              <p className="block__rule">
+                Safety guard escalated to a person:{" "}
                 <code>{event.recommended_action}</code>
               </p>
               <p className="block__reason">{event.guard_override_reason}</p>
@@ -204,6 +249,24 @@ export default function TraceView({ event }: Props) {
                 label="Gateway called"
                 value={String(event.execution.gateway_called)}
               />
+              <Field
+                label="Idempotency key"
+                value={event.execution.idempotency_key ?? null}
+              />
+              <Field
+                label="Charged"
+                value={
+                  event.execution.charged_payment_id
+                    ? `${event.execution.charged_payment_id} · ${formatRupees(
+                        event.execution.charged_amount ?? 0,
+                      )}${
+                        event.execution.discount_applied
+                          ? ` (after ${formatRupees(event.execution.discount_applied)} discount)`
+                          : ""
+                      }`
+                    : null
+                }
+              />
               {event.execution.calls.length > 0 && (
                 <ul className="reasons" data-testid="gateway-calls">
                   {event.execution.calls.map((call) => (
@@ -214,11 +277,21 @@ export default function TraceView({ event }: Props) {
             </>
           ) : (
             <p className="stage__note" data-testid="no-execution">
-              Nothing executed. The block returned before the Execute stage, so
-              the payment was never touched.
+              {blocked
+                ? "Nothing executed. The block returned before the Execute stage, so the payment was never touched."
+                : event.failed_stage
+                  ? `Nothing executed. Processing stopped at the ${event.failed_stage} stage, before any action ran.`
+                  : "Nothing executed."}
             </p>
           )}
-          {event.verification && (
+          {event.verification && !event.verification.performed && (
+            // Nothing was re-read -- say why rather than rendering an empty
+            // expected/observed pair.
+            <div className="verify" data-testid="verification">
+              <Field label="Verification" value={event.verification.detail} />
+            </div>
+          )}
+          {event.verification?.performed && (
             <div className="verify" data-testid="verification">
               <Field
                 label="Verified"

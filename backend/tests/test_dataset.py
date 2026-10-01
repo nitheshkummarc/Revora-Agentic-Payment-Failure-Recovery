@@ -51,9 +51,14 @@ EXPECTED_VIOLATION_RULES = {
     "MAX_RETRIES_EXCEEDED",
 }
 
+# Opt-out is exercised by the adversarial bucket; trace confidence is
+# unreachable on the pipeline; the discount-vs-amount rule is covered by
+# test_policy.py, since a dataset row for it would reassign every row in the
+# violation bucket.
 RULES_COVERED_ELSEWHERE = {
     "CUSTOMER_OPTED_OUT",
     "TRACE_CONFIDENCE_BELOW_THRESHOLD",
+    "DISCOUNT_EXCEEDS_AMOUNT",
 }
 
 BUCKET_TARGETS = {
@@ -429,7 +434,7 @@ def test_violation_bucket_covers_every_reachable_rule(rows):
     assert covered == EXPECTED_VIOLATION_RULES
 
 
-def test_the_two_uncovered_rules_are_the_ones_covered_elsewhere(rows):
+def test_rules_without_a_violation_row_are_the_ones_covered_elsewhere(rows):
     """Named explicitly so an added rule fails this test rather than being
     quietly absent from the dataset."""
     all_rules = {member.value for member in R.RuleId}

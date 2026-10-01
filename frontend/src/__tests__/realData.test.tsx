@@ -81,9 +81,12 @@ describe("real batch results", () => {
     const money = moneySummary(REAL_RESULTS);
     const parts =
       money.settledViaRetryPaise +
+      money.discountGivenPaise +
+      money.foundAlreadyPaidPaise +
       money.preservedByPolicyPaise +
       money.escalatedPaise +
       money.needsReviewPaise +
+      money.noActionAtRiskPaise +
       money.neverAtRiskPaise;
     expect(parts).toBe(money.totalPaise);
     expect(money.addressablePaise).toBeLessThan(money.totalPaise);
@@ -117,7 +120,10 @@ describe("real batch results", () => {
     );
   });
 
-  it("renders every real event's trace without throwing", () => {
+  // 500 full mounts is the point of this test and costs ~4s on its own, so it
+  // gets explicit headroom rather than the 5s default, which parallel test
+  // files can push it past.
+  it("renders every real event's trace without throwing", { timeout: 30_000 }, () => {
     // Real data has nulls in places fixtures do not -- an event that never
     // reached the policy stage, one with no execution record, one with no root
     // cause. Rendering all 500 is the cheapest way to prove none of them break

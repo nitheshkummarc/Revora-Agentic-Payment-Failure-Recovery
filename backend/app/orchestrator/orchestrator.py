@@ -12,9 +12,10 @@ marked NEEDS_REVIEW naming the stage that failed. Cascading a partial result is
 how a pipeline reports success while having done the wrong thing.
 
 **Verify never assumes success from a call that did not raise.** After an action
-executes, the gateway is re-queried and the observed state is compared against
-the state that action was supposed to produce. A mismatch is NEEDS_REVIEW, not
-a recovery.
+that changes gateway state executes, the gateway is re-queried and the observed
+state is compared against the state that action was supposed to produce. A
+mismatch is NEEDS_REVIEW, not a recovery. An action that changes nothing has
+nothing to verify, and says so rather than reporting a re-read as a pass.
 
 Observation reads only merchant-visible evidence -- delivered webhooks plus the
 payment's creation time. The single sanctioned use of gateway truth is the
@@ -29,10 +30,10 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, status as http_status
 
@@ -40,13 +41,10 @@ from app.core.logging import get_logger, log_event
 from app.gateway.mock_gateway import (
     EntityNotFoundError,
     MockPaymentGateway,
-    get_gateway,
 )
 from app.gateway.schemas import (
-    CapturePaymentRequest,
     PaymentState,
-    SimulateWebhookRequest,
-    WebhookEventName,
+    RetryPaymentRequest,
 )
 from app.intelligence.llm_client import IntelligenceLayer
 from app.intelligence.schemas import IntelligenceDecision, IntelligenceInput, RecommendedAction
@@ -78,6 +76,11 @@ DEFAULT_COOLDOWN_HOURS = 24
 #: States in which a payment has actually succeeded. A verification query that
 #: lands here means the ambiguity resolved favourably and no action is needed.
 SETTLED_SUCCESS_STATES = frozenset({PaymentState.AUTHORIZED, PaymentState.CAPTURED})
+
+#: States a soft retry may act from: a failed payment gets a new attempt, and
+#: an authorized one is captured. Anything else is either already paid,
+#: refunded, or has not failed yet.
+RETRYABLE_STATES = frozenset({PaymentState.FAILED, PaymentState.AUTHORIZED})
 
 #: Where the batch trace log is written so the dashboard can read it without a
 #: database and without losing it when the process restarts.
@@ -133,6 +136,13 @@ class AgentOrchestrator:
         so re-running the same dataset after a fix produces a distinguishable
         run.
         """
+        # One row per payment; a repeat would act on the first row's result
+        # and be counted twice.
+        counts = Counter(event.payment_id for event in events)
+        repeated = sorted(payment_id for payment_id, n in counts.items() if n > 1)
+        if repeated:
+            raise ValueError(f"batch lists payment(s) more than once: {repeated}")
+
         batch_run_id = str(uuid.uuid4())
         started_at = self._clock()
         traces: List[EventTrace] = []
@@ -196,8 +206,13 @@ class AgentOrchestrator:
             processed_at=self._clock(),
         )
 
+        # Current stage, for attributing an unclassified exception.
+        stage = PipelineStage.OBSERVE
         try:
-            observation = self._observe(event)
+            observation, recorded_attempts = self._observe(event)
+            # Larger of the caller's count and the gateway's record.
+            retry_count = max(event.retry_count, recorded_attempts)
+            stage = PipelineStage.TRACE
             resolution = self._resolve(observation)
             self._record_resolution(trace, resolution)
 
@@ -210,18 +225,24 @@ class AgentOrchestrator:
                     action=RecommendedAction.NO_ACTION_COOLDOWN,
                     gateway_called=False,
                     detail=(
-                        f"payment resolved to {resolution.state.value}; it did not "
-                        "fail, so no recovery is required"
+                        f"payment resolved to {resolution.state.value}; no failure "
+                        "has been observed yet and it is still within the silence "
+                        "window, so there is nothing to recover at this point"
+                        if resolution.state is CanonicalState.CREATED
+                        else f"payment resolved to {resolution.state.value}; it did "
+                        "not fail, so no recovery is required"
                     ),
                 )
                 self._log_event_result(trace)
                 return trace
             self._record_trace(trace, trace_result)
 
+            stage = PipelineStage.PLAN
             recommendation = self._plan(event, trace_result)
             self._record_recommendation(trace, recommendation)
 
-            decision = self._validate(event, recommendation, trace_result)
+            stage = PipelineStage.VALIDATE
+            decision = self._validate(event, recommendation, trace_result, retry_count)
             self._record_decision(trace, decision)
 
             if not decision.approved:
@@ -229,16 +250,24 @@ class AgentOrchestrator:
                 self._log_event_result(trace)
                 return trace
 
-            execution = self._execute(event, decision, resolution)
+            stage = PipelineStage.EXECUTE
+            execution = self._execute(event, decision, resolution, retry_count)
             trace.execution = execution
 
+            stage = PipelineStage.VERIFY
             verification = self._verify(event, execution)
             trace.verification = verification
 
             trace.outcome = self._outcome_for(execution, verification)
             if trace.outcome is EventOutcome.NEEDS_REVIEW:
-                trace.failed_stage = PipelineStage.VERIFY
-                trace.needs_review_reason = verification.detail
+                # An incomplete action failed in Execute; only a completed one
+                # that did not match is a Verify failure.
+                if not execution.succeeded:
+                    trace.failed_stage = PipelineStage.EXECUTE
+                    trace.needs_review_reason = execution.detail
+                else:
+                    trace.failed_stage = PipelineStage.VERIFY
+                    trace.needs_review_reason = verification.detail
 
         except StageError as exc:
             trace.outcome = EventOutcome.NEEDS_REVIEW
@@ -246,30 +275,42 @@ class AgentOrchestrator:
             trace.needs_review_reason = exc.message
         except Exception as exc:  # a stage raised something unclassified
             trace.outcome = EventOutcome.NEEDS_REVIEW
-            trace.failed_stage = PipelineStage.OBSERVE
+            trace.failed_stage = stage
             trace.needs_review_reason = f"unhandled error: {exc}"
 
         self._log_event_result(trace)
         return trace
 
     # -- stages ------------------------------------------------------------
-    def _observe(self, event: BatchEvent) -> PaymentObservation:
+    def _observe(self, event: BatchEvent) -> Tuple[PaymentObservation, int]:
         """Read the payment's merchant-visible evidence from the gateway.
 
-        Deliberately reads `event_history` and `created_at` only. The gateway's
-        own state is not consulted here -- resolving from incomplete evidence is
-        the point, and Verify is where a status query belongs.
+        Resolution uses only `event_history` and `created_at`; the gateway's
+        own state is left to the status queries in Execute and Verify.
+
+        Also checks the row's amount and currency against the payment, since
+        every compliance rule runs on the row's amount, and returns the
+        gateway's recorded count of recovery attempts.
         """
         try:
             snapshot = self.gateway.get_payment_status(event.payment_id)
         except EntityNotFoundError as exc:
             raise StageError(PipelineStage.OBSERVE, str(exc)) from exc
-        return PaymentObservation(
+        payment = snapshot.payment
+        if (payment.amount, payment.currency) != (event.amount, event.currency):
+            raise StageError(
+                PipelineStage.OBSERVE,
+                f"batch row says {event.amount} {event.currency} but payment "
+                f"{event.payment_id} is {payment.amount} {payment.currency}; "
+                "compliance checks will not run on an amount the payment does not carry",
+            )
+        observation = PaymentObservation(
             payment_id=event.payment_id,
             created_at=snapshot.payment.created_at,
             events=list(snapshot.event_history),
             observed_at=self._clock(),
         )
+        return observation, payment.recovery_attempts
 
     def _resolve(self, observation: PaymentObservation) -> StateResolution:
         try:
@@ -330,6 +371,7 @@ class AgentOrchestrator:
         event: BatchEvent,
         recommendation: IntelligenceDecision,
         trace_result: TraceResult,
+        retry_count: int,
     ) -> PolicyDecision:
         try:
             decision = self.policy.validate(
@@ -343,7 +385,7 @@ class AgentOrchestrator:
                     afa_flag=event.afa_flag,
                     mandate_category=event.mandate_category,
                     opted_out=event.opted_out,
-                    retry_count=event.retry_count,
+                    retry_count=retry_count,
                     discount_amount=event.discount_amount,
                     trace_confidence=trace_result.confidence,
                     evaluated_at=self._clock(),
@@ -360,11 +402,12 @@ class AgentOrchestrator:
         event: BatchEvent,
         decision: PolicyDecision,
         resolution: StateResolution,
+        retry_count: int,
     ) -> ExecutionRecord:
         """Dispatch the approved action. One bounded implementation per action."""
         action = decision.final_action
         if action is RecommendedAction.RETRY_SOFT:
-            return self._execute_retry_soft(event)
+            return self._execute_retry_soft(event, resolution, attempt=retry_count + 1)
         if action is RecommendedAction.REQUEST_VERIFICATION:
             return self._execute_request_verification(event, resolution)
         if action is RecommendedAction.ESCALATE_HUMAN:
@@ -373,28 +416,65 @@ class AgentOrchestrator:
             return self._execute_cooldown(event)
         raise StageError(PipelineStage.EXECUTE, f"no implementation for action {action}")
 
-    def _execute_retry_soft(self, event: BatchEvent) -> ExecutionRecord:
-        """Re-attempt the payment through the gateway.
+    def _execute_retry_soft(
+        self, event: BatchEvent, resolution: StateResolution, attempt: int
+    ) -> ExecutionRecord:
+        """Retry the payment through the gateway.
 
-        A soft retry re-attempts authorization when the payment is not already
-        authorized, then captures. Both calls go through the gateway's own
-        endpoints; whether they are legal from the payment's current state is
-        the gateway's decision, not this module's.
+        Checks gateway status first. The plan was made from delivered webhooks,
+        which can be stale, so if the payment or an earlier retry attempt is
+        already captured nothing is written and the event is held for review.
+
+        Otherwise one `retry_payment` call is made under an idempotency key for
+        this payment and attempt number, with the approved discount. The
+        gateway charges a new attempt (or captures an existing authorization),
+        and a repeated key returns the first result.
         """
         calls: List[str] = []
+        idempotency_key = f"revora-retry:{event.payment_id}:{attempt}"
         try:
-            current = self.gateway.get_payment_status(event.payment_id).payment.state
+            status = self.gateway.get_payment_status(event.payment_id)
             calls.append("GET /payments/{id}/status")
-            if current is not PaymentState.AUTHORIZED:
-                self.gateway.simulate_webhook(
-                    SimulateWebhookRequest(
-                        entity_id=event.payment_id,
-                        event=WebhookEventName.PAYMENT_AUTHORIZED,
+            current = status.payment.state
+            paid_attempt = next(
+                (a for a in status.retry_attempts if a.state is PaymentState.CAPTURED),
+                None,
+            )
+            if current not in RETRYABLE_STATES or paid_attempt is not None:
+                already_paid = current is PaymentState.CAPTURED or paid_attempt is not None
+                if paid_attempt is not None:
+                    finding = (
+                        f"earlier retry attempt {paid_attempt.payment_id} is already "
+                        "captured, so another retry would charge the customer twice"
                     )
+                elif current is PaymentState.CAPTURED:
+                    finding = (
+                        "the payment is already captured, so a retry would charge "
+                        "the customer twice"
+                    )
+                else:
+                    finding = f"a {current.value} payment is not retryable"
+                return ExecutionRecord(
+                    action=RecommendedAction.RETRY_SOFT,
+                    gateway_called=True,
+                    calls=calls,
+                    expected_state=PaymentState.CAPTURED.value,
+                    detail=(
+                        f"retry stopped before any write: status {current.value}, "
+                        f"evidence {resolution.state.value}; {finding}. Held for "
+                        "review because the evidence the plan used was out of date."
+                    ),
+                    succeeded=False,
+                    reconciled=already_paid,
                 )
-                calls.append("POST /webhooks/simulate (payment.authorized)")
-            self.gateway.capture_payment(CapturePaymentRequest(payment_id=event.payment_id))
-            calls.append("POST /payments/capture")
+            calls.append("POST /payments/retry")
+            charged = self.gateway.retry_payment(
+                RetryPaymentRequest(
+                    payment_id=event.payment_id,
+                    idempotency_key=idempotency_key,
+                    discount_amount=event.discount_amount,
+                )
+            ).payment
         except Exception as exc:
             return ExecutionRecord(
                 action=RecommendedAction.RETRY_SOFT,
@@ -403,13 +483,22 @@ class AgentOrchestrator:
                 expected_state=PaymentState.CAPTURED.value,
                 detail=f"retry did not complete: {exc}",
                 succeeded=False,
+                idempotency_key=idempotency_key if "POST /payments/retry" in calls else None,
             )
+        discount = event.amount - (charged.captured_amount or charged.amount)
         return ExecutionRecord(
             action=RecommendedAction.RETRY_SOFT,
             gateway_called=True,
             calls=calls,
             expected_state=PaymentState.CAPTURED.value,
-            detail="re-attempted the payment and captured it",
+            detail=(
+                f"retry attempt {attempt} charged {charged.payment_id}"
+                + (f" with a {discount} paise discount" if discount else "")
+            ),
+            idempotency_key=idempotency_key,
+            charged_payment_id=charged.payment_id,
+            charged_amount=charged.captured_amount,
+            discount_applied=discount,
         )
 
     def _execute_request_verification(
@@ -460,7 +549,8 @@ class AgentOrchestrator:
             action=RecommendedAction.REQUEST_VERIFICATION,
             gateway_called=True,
             calls=["GET /payments/{id}/status"],
-            expected_state=observed.value,
+            # Reads state rather than producing one, so nothing to expect.
+            expected_state=None,
             detail=detail,
             succeeded=True,
             reconciled=reconciled,
@@ -507,9 +597,20 @@ class AgentOrchestrator:
                 matched=False,
                 detail=f"execution did not complete, nothing to verify: {execution.detail}",
             )
+        if execution.action is RecommendedAction.REQUEST_VERIFICATION:
+            # The status query is the check; re-reading it would always match.
+            return VerificationRecord(
+                performed=False,
+                detail=(
+                    "REQUEST_VERIFICATION is itself the status query and changes no "
+                    "state, so there is nothing to verify afterwards; its outcome "
+                    "rests on what that query returned"
+                ),
+            )
 
         try:
-            observed = self.gateway.get_payment_status(event.payment_id).payment.state.value
+            target = execution.charged_payment_id or event.payment_id
+            observed = self.gateway.get_payment_status(target).payment.state.value
         except Exception as exc:
             raise StageError(PipelineStage.VERIFY, f"verification query failed: {exc}") from exc
 
@@ -545,7 +646,7 @@ class AgentOrchestrator:
                 # The status query itself failed, so the ambiguity is still
                 # unresolved and nobody has looked at it.
                 return EventOutcome.NEEDS_REVIEW
-            if execution.reconciled and verification.matched:
+            if execution.reconciled:
                 # The payment had succeeded all along; nothing needed doing.
                 return EventOutcome.RECOVERED
             # The query resolved the ambiguity unfavourably: the payment really
@@ -576,11 +677,14 @@ class AgentOrchestrator:
     def _record_recommendation(trace: EventTrace, decision: IntelligenceDecision) -> None:
         trace.recommended_action = decision.recommended_action
         trace.llm_called = decision.llm_called
+        trace.short_circuit_reason = decision.short_circuit_reason
+        trace.model = decision.model
         trace.recommendation_confidence = decision.confidence
         trace.reasoning = decision.reasoning
         trace.injection_patterns_flagged = list(
             decision.sanitization.injection_patterns_flagged
         )
+        trace.pii_redacted = list(decision.sanitization.pii_redacted)
         trace.original_llm_action = decision.original_llm_action
         trace.guard_override_reason = decision.guard_override_reason
 
@@ -606,9 +710,20 @@ class AgentOrchestrator:
             and trace.final_action is not RecommendedAction.ESCALATE_HUMAN
         ):
             return None
+        # Most specific reason first. The model's reasoning comes last because
+        # after a guard override or a status check it argues for something
+        # that did not happen.
+        verification_finding = (
+            trace.execution.detail
+            if trace.execution is not None
+            and trace.execution.action is RecommendedAction.REQUEST_VERIFICATION
+            else None
+        )
         reason = (
             trace.needs_review_reason
             or trace.blocked_reason
+            or trace.guard_override_reason
+            or verification_finding
             or trace.reasoning
             or "flagged for human review"
         )
@@ -616,7 +731,8 @@ class AgentOrchestrator:
             payment_id=trace.payment_id,
             amount=trace.amount,
             reason=reason,
-            final_action=trace.final_action or RecommendedAction.ESCALATE_HUMAN,
+            # None when no action was decided.
+            final_action=trace.final_action,
             root_cause=trace.root_cause,
             blocked_reason=trace.blocked_reason,
         )
@@ -695,10 +811,3 @@ def batch_results(batch_run_id: str) -> BatchResults:
             detail=f"no batch run {batch_run_id}",
         )
     return results
-
-
-def build_orchestrator(
-    intelligence: Optional[IntelligenceLayer] = None,
-) -> AgentOrchestrator:
-    """Wire an orchestrator against the process-wide gateway."""
-    return AgentOrchestrator(gateway=get_gateway(), intelligence=intelligence)

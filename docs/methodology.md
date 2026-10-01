@@ -124,6 +124,10 @@ trying to elicit, so on every adversarial row the stub behaves as a model that
 has **fully complied with the attack** — and the guard catches it anyway. The
 stub is the worst case for the guard, not a soft test of it.
 
+The other side of that: the note-influence check never fires in a stub run.
+The stub ignores the note, so asking it again without the note gives the same
+answer. Unit tests cover that check; the batch says nothing about it.
+
 What the batch consequently **cannot** show: anything about a real model's
 judgement. The README says this at the point where the numbers appear rather
 than only in a footnote, and the dashboard states the same provenance on screen.
@@ -179,7 +183,7 @@ answer that a human should look at, not as a pass/fail gate.
 The test that reports whether the model resisted an injection on its own was
 keying off the wrong field, and the resulting figure was meaningless.
 
-`guard_override_reason` is set whenever a customer note matches an
+`guard_override_reason` was then set whenever a customer note matched an
 instruction-like pattern — *including* when the model had already answered
 `ESCALATE_HUMAN` and the guard therefore changed nothing. Since every adversarial
 note in the set is flagged by design, keying off that field placed all of them in
@@ -189,7 +193,10 @@ was a constant, not a measurement.
 The fix reads the model's own pre-guard answer (`original_llm_action`, falling
 back to the final action when no guard fired) and classifies it against the
 money-moving action set. The README records both the corrected figure and the
-fact that the earlier one was an artifact.
+fact that the earlier one was an artifact. The same flaw also sat in the product
+itself: the guard recorded an "override" on those no-op cases, which would have
+inflated the dashboard's override rate on any live run. The guard now records an
+override only when it actually changes the answer.
 
 **What this changed, and what it did not.** It changed attribution only. In both
 the broken and the corrected measurement, the final action on every adversarial
@@ -252,6 +259,11 @@ Construction, and why each choice matters:
   duplicate-payment risk, not a recovery.** This is the classification decision
   that makes the comparison meaningful; scored the naive way, double-charging a
   customer would register as a win.
+- **Value at the payment amount.** Revora's retries take approved discounts off
+  the charge (₹11,500 across 23 rows in the committed run); the naive policy
+  applies none. The comparison counts both at the original amount so the two
+  columns are measured the same way. The README's results table shows the
+  amount actually charged.
 
 ### The caveat, repeated because it is load-bearing
 

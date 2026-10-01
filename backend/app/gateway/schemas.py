@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -117,12 +117,6 @@ class ErrorObject(StrictModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
-class ErrorEnvelope(StrictModel):
-    """The wire shape Razorpay returns: {"error": {...}}."""
-
-    error: ErrorObject
-
-
 # The only error object hardcoded in this module, reproducing a documented
 # Razorpay example so that no error code here is invented. Callers needing any
 # other failure must pass their own error object; the gateway never guesses.
@@ -192,6 +186,14 @@ class WebhookEvent(StrictModel):
     chaos_modes: List[ChaosMode] = Field(default_factory=list)
 
 
+def event_identity(event: WebhookEvent) -> Tuple[str, int, str]:
+    """Idempotency key for one logical event: (entity_id, sequence, occurred_at).
+
+    Independent of arrival order. Shared by the gateway, resolver and tracer.
+    """
+    return (event.entity_id, event.sequence, event.occurred_at.isoformat())
+
+
 class TransitionLogEntry(StrictModel):
     """One entry explaining why a transition was or was not applied."""
 
@@ -241,6 +243,14 @@ class PaymentRecord(StrictModel):
     error: Optional[ErrorObject] = None
     notes: Optional[str] = None
     subscription_id: Optional[str] = None
+    # Recovery retries accepted for this payment, one per idempotency key.
+    recovery_attempts: int = Field(default=0, ge=0)
+    # New payments created by those retries, oldest first.
+    retry_attempt_ids: List[str] = Field(default_factory=list)
+    # On a retry attempt: the payment it retries.
+    retry_of: Optional[str] = None
+    # Amount actually captured, in paise. Set on capture.
+    captured_amount: Optional[int] = Field(default=None, ge=0)
 
 
 class SubscriptionRecord(StrictModel):
@@ -257,9 +267,10 @@ class SubscriptionRecord(StrictModel):
 class CreatePaymentRequest(StrictModel):
     amount: int = Field(gt=0, description="Amount in paise (50000 = Rs.500)")
     currency: str = "INR"
-    payment_id: Optional[str] = None
+    # Omit to have the gateway assign one; an empty string is rejected.
+    payment_id: Optional[str] = Field(default=None, min_length=1)
     order_id: Optional[str] = None
-    subscription_id: Optional[str] = None
+    subscription_id: Optional[str] = Field(default=None, min_length=1)
     # Free-text and customer-supplied. Treated as untrusted data everywhere
     # downstream, where it is sanitised before use; the gateway only stores it.
     notes: Optional[str] = None
@@ -268,6 +279,18 @@ class CreatePaymentRequest(StrictModel):
 class CapturePaymentRequest(StrictModel):
     payment_id: str
     chaos: Optional[ChaosConfig] = None
+
+
+class RetryPaymentRequest(StrictModel):
+    """One recovery attempt for a failed (or authorized) payment.
+
+    `idempotency_key` names the attempt; resending it returns the first
+    result. `discount_amount` (paise) is taken off the amount charged.
+    """
+
+    payment_id: str = Field(min_length=1)
+    idempotency_key: str = Field(min_length=1)
+    discount_amount: int = Field(default=0, ge=0)
 
 
 class FailPaymentRequest(StrictModel):
@@ -279,7 +302,7 @@ class FailPaymentRequest(StrictModel):
 
 
 class SimulateWebhookRequest(StrictModel):
-    entity_id: str
+    entity_id: str = Field(min_length=1)
     event: WebhookEventName
     error: Optional[ErrorObject] = None
     chaos: Optional[ChaosConfig] = None
@@ -290,6 +313,8 @@ class PaymentStatusResponse(StrictModel):
     event_history: List[WebhookEvent]
     transition_log: List[TransitionLogEntry]
     pending_webhook_count: int
+    # The payments created by recovery retries of this one.
+    retry_attempts: List[PaymentRecord] = Field(default_factory=list)
 
 
 class SubscriptionStatusResponse(StrictModel):
@@ -301,8 +326,11 @@ class SubscriptionStatusResponse(StrictModel):
 class SimulateWebhookResponse(StrictModel):
     entity_type: Literal["payment", "subscription"]
     entity_id: str
+    # Landed in the merchant-visible event history.
     delivered: List[WebhookEvent]
+    # Will never land: dropped by chaos, or undeliverable.
     dropped: List[WebhookEvent]
+    # Still in flight; lands on a later settle.
     scheduled: List[WebhookEvent]
     current_state: str
     webhook_derived_state: Optional[str] = None

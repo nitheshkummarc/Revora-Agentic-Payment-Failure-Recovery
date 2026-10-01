@@ -108,6 +108,9 @@ class ChaosInjector:
 
         # 2. Silent drop: the webhook never fires at all.
         if self.has(ChaosMode.SILENT_DROP):
+            # This branch returns early, so stamp the modes here.
+            for ev in working:
+                ev.chaos_modes = list(dict.fromkeys(ev.chaos_modes + self.modes))
             plan.dropped.extend(working)
             plan.notes.append(
                 "silent_drop: {} event(s) generated but never delivered; "
@@ -138,7 +141,10 @@ class ChaosInjector:
                 # timestamps would be a no-op. Instead lay the events out on a
                 # fresh millisecond-spaced timeline in reverse: the
                 # highest-sequence event arrives first.
-                base = min(sd.deliver_at for sd in plan.scheduled)
+                # Start from the latest arrival so earlier events are held back;
+                # starting from the earliest would deliver the flip's
+                # authorization before it happened.
+                base = max(sd.deliver_at for sd in plan.scheduled)
                 spread = timedelta(milliseconds=1)
                 count = len(plan.scheduled)
                 for idx, sd in enumerate(plan.scheduled):

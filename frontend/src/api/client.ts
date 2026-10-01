@@ -1,12 +1,9 @@
 /**
  * Read-only access to a completed batch run.
  *
- * Two sources, and the dashboard says which one it used rather than hiding the
- * difference. A `?run=<batch_run_id>` in the URL fetches that run live from the
- * backend. With no run id there is nothing to ask the backend for -- the
- * endpoint is addressed by run id and there is no "latest" -- so the committed
- * snapshot is loaded instead. That is also what makes the dashboard runnable
- * with the backend down.
+ * `?run=<batch_run_id>` asks the backend for that run, which it serves from
+ * disk. Without a run id the committed snapshot is loaded, so the dashboard
+ * also works with the backend down. The header shows which source was used.
  *
  * Nothing here writes. There is no POST, PUT or DELETE path to the backend and
  * no browser storage of any kind: a refresh re-fetches from source.
@@ -14,7 +11,7 @@
 
 import type { BatchResults } from "../types";
 
-export type ResultsSource = "live-api" | "snapshot";
+export type ResultsSource = "backend-api" | "snapshot";
 
 export interface LoadedResults {
   results: BatchResults;
@@ -35,12 +32,26 @@ export function runIdFromLocation(search: string): string | null {
   return value && value.trim() ? value.trim() : null;
 }
 
+/** How long to wait for a response before showing an error. */
+export const FETCH_TIMEOUT_MS = 15_000;
+
 async function getJson(url: string): Promise<BatchResults> {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText} from ${url}`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) {
+      throw new Error(`${response.status} ${response.statusText} from ${url}`);
+    }
+    return (await response.json()) as BatchResults;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`no response from ${url} within ${FETCH_TIMEOUT_MS / 1000}s`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
-  return (await response.json()) as BatchResults;
 }
 
 export async function loadBatchResults(
@@ -52,7 +63,7 @@ export async function loadBatchResults(
     const results = await getJson(batchResultsUrl(runId));
     return {
       results,
-      source: "live-api",
+      source: "backend-api",
       detail: `GET /api/batch-results/${runId}`,
     };
   }

@@ -600,3 +600,13 @@ code {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
+
+/* Review queue reuses the block-log cards, accented as escalations rather
+   than as policy blocks. */
+.review-queue .blockcard {
+  border-left-color: var(--escalated);
+}
+
+.review-queue .blockcard:hover {
+  border-color: var(--escalated);
+}

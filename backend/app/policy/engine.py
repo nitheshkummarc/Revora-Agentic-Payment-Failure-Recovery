@@ -15,9 +15,11 @@ Two design points worth knowing before reading the code:
 2. Only debiting actions are gated on the compliance fields. RETRY_SOFT re-attempts
    a customer's payment; REQUEST_VERIFICATION reads status, and ESCALATE_HUMAN /
    NO_ACTION_COOLDOWN stop. Requiring a pre-debit notice before an escalation
-   would block the safe path and push events toward the unsafe one. The one
-   exception is the opt-out rule, which blocks everything -- see
-   `rules.check_opted_out`.
+   would block the safe path and push events toward the unsafe one. The opt-out
+   rule is checked before this split and reaches further: it also blocks
+   REQUEST_VERIFICATION, since that continues the recovery workflow, while
+   still permitting ESCALATE_HUMAN and NO_ACTION_COOLDOWN -- see
+   `rules.OPT_OUT_BLOCKED_ACTIONS`.
 """
 
 from __future__ import annotations
@@ -38,17 +40,13 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-#: The seven value-threshold RuleIds the kill switch is allowed to reach --
-#: kept in step with the `rule_id`s inside `checks` in `validate()` below by
-#: a test (test_disablable_rule_ids_matches_the_checks_list), since `checks`
-#: is built inline per-call and can't be introspected without one.
+#: Value rules the kill switch may disable: only those with no regulatory
+#: basis. Rules that enforce the circular cannot be switched off. A test holds
+#: this set to the value rules that do not cite the circular.
 DISABLABLE_RULE_IDS: FrozenSet[str] = frozenset(
     {
-        R.RuleId.PRE_DEBIT_NOTICE_TOO_RECENT.value,
-        R.RuleId.MANDATE_CEILING_EXCEEDED.value,
-        R.RuleId.AFA_REQUIRED_AND_MISSING.value,
-        R.RuleId.AFA_SIP_INSURANCE_REQUIRED_AND_MISSING.value,
         R.RuleId.MAX_DISCOUNT_EXCEEDED.value,
+        R.RuleId.DISCOUNT_EXCEEDS_AMOUNT.value,
         R.RuleId.MAX_RETRIES_EXCEEDED.value,
         R.RuleId.TRACE_CONFIDENCE_BELOW_THRESHOLD.value,
     }
@@ -57,17 +55,16 @@ DISABLABLE_RULE_IDS: FrozenSet[str] = frozenset(
 
 def _disabled_rule_ids() -> FrozenSet[str]:
     """Operational kill switch: REVORA_DISABLED_RULES, a comma-separated list
-    of RuleId names, for turning off one or more of the seven value-threshold
+    of RuleId names, for turning off one or more of the non-regulatory value
     rules fast during a live demo without a restart.
 
-    Scoped deliberately: only the value-threshold rules below are disablable.
-    The opt-out and missing-RBI-field gates are not in `checks` at all, so
-    this switch cannot reach them -- an absent field or an opted-out customer
-    stays a hard block regardless. Verify is a different module and has no
-    kill switch of any kind.
+    Scoped deliberately to DISABLABLE_RULE_IDS. Every rule that enforces the
+    circular -- the opt-out, the missing-field gates and the four regulatory
+    value rules -- stays a hard block regardless. Verify is a different module
+    and has no kill switch of any kind.
 
     A name that doesn't match any disablable RuleId (a typo, wrong case, or
-    one of the four rules this switch can't reach) is logged separately as
+    one of the rules this switch can't reach) is logged separately as
     unrecognised rather than silently accepted -- accepting it would let an
     operator believe a rule was turned off when nothing changed.
     """
@@ -208,6 +205,12 @@ class PolicyEngine:
             (
                 R.RuleId.MAX_DISCOUNT_EXCEEDED,
                 lambda: R.check_max_discount(event_context.discount_amount),
+            ),
+            (
+                R.RuleId.DISCOUNT_EXCEEDS_AMOUNT,
+                lambda: R.check_discount_below_amount(
+                    event_context.discount_amount, event_context.amount
+                ),
             ),
             (
                 R.RuleId.MAX_RETRIES_EXCEEDED,

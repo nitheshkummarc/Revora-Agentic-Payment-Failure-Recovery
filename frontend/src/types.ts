@@ -27,6 +27,14 @@ export interface ExecutionRecord {
   cooldown_until: string | null;
   succeeded: boolean;
   reconciled: boolean | null;
+  /** RETRY_SOFT only: the idempotency key the gateway attempt was sent under. */
+  idempotency_key: string | null;
+  /** RETRY_SOFT only: the payment charged (a new attempt, or the original). */
+  charged_payment_id: string | null;
+  /** RETRY_SOFT only: amount captured, in paise. */
+  charged_amount: number | null;
+  /** RETRY_SOFT only: discount taken off the charge, in paise. */
+  discount_applied: number | null;
 }
 
 export interface VerificationRecord {
@@ -56,16 +64,33 @@ export interface EventTrace {
   ambiguity_reasons: string[];
 
   recommended_action: Action | null;
+  /**
+   * True when a model answer was obtained and used; false when the layer
+   * decided without one; null when the layer was never reached.
+   */
   llm_called: boolean | null;
+  /**
+   * Why no model answer was used, when `llm_called` is false:
+   * "tracer_ambiguous" (the model was deliberately not asked), or a fail-safe
+   * reason such as "llm_call_failed" or "llm_circuit_open".
+   */
+  short_circuit_reason: string | null;
+  /** The model that produced the recommendation; null when none did. */
+  model: string | null;
   recommendation_confidence: number | null;
   reasoning: string | null;
   injection_patterns_flagged: string[];
+  /** Kinds of personal data redacted from the note before any model saw it. */
+  pii_redacted: string[];
   /**
-   * What the model returned before the deterministic guard replaced it, and
-   * why. Both null unless the guard intervened, so their presence is itself the
-   * signal that it did.
+   * What the model returned before the deterministic guard replaced it. Null
+   * unless the guard changed a model answer.
    */
   original_llm_action: Action | null;
+  /**
+   * Why a guard changed the action. Also set on an ambiguous trace when a
+   * flagged note escalated it; original_llm_action is then null.
+   */
   guard_override_reason: string | null;
 
   approved: boolean | null;
@@ -95,7 +120,8 @@ export interface HumanReviewItem {
   payment_id: string;
   amount: number;
   reason: string;
-  final_action: Action;
+  /** Null when the event stopped before any action was decided. */
+  final_action: Action | null;
   root_cause: string | null;
   blocked_reason: string | null;
 }

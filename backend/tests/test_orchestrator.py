@@ -581,6 +581,12 @@ def test_verification_reconciles_a_payment_that_actually_succeeded(
     assert trace.execution.reconciled is True
     assert "resolved without action" in trace.execution.detail
     assert trace.outcome is EventOutcome.RECOVERED
+    # The query was the check. A second read of the same value would always
+    # match, so Verify says so instead of reporting a tautological pass.
+    assert trace.execution.expected_state is None
+    assert trace.verification.performed is False
+    assert trace.verification.matched is None
+    assert "itself the status query" in trace.verification.detail
 
 
 def test_cooldown_is_terminal_and_touches_no_gateway(gateway, clock, tmp_path):
@@ -787,7 +793,7 @@ def test_retry_soft_execution_failure_is_never_marked_successful(
     """
     event = seed_standard_failure(gateway)
     orchestrator = build(
-        gateway, clock, tmp_path, gateway=RaisingGateway(gateway, "capture_payment", 1)
+        gateway, clock, tmp_path, gateway=RaisingGateway(gateway, "retry_payment", 1)
     )
     trace = orchestrator.run_batch([event]).events[0]
 
@@ -802,7 +808,10 @@ def test_retry_soft_execution_failure_is_never_marked_successful(
     assert trace.verification.matched is False
     assert trace.outcome is EventOutcome.NEEDS_REVIEW
     assert trace.outcome is not EventOutcome.RECOVERED
-    assert trace.failed_stage is PipelineStage.VERIFY
+    # The capture raised during Execute; Verify had nothing to check, so the
+    # failure is attributed to where it happened.
+    assert trace.failed_stage is PipelineStage.EXECUTE
+    assert trace.needs_review_reason == trace.execution.detail
 
 
 def test_request_verification_status_failure_is_never_marked_successful(
@@ -865,3 +874,347 @@ def test_a_failing_event_does_not_stop_the_batch(gateway, clock, tmp_path):
         "pay_standard",
         "pay_ambiguous",
     }
+
+
+# --------------------------------------------------------------------------
+# A retry planned on stale evidence must not write to an already-paid payment
+# --------------------------------------------------------------------------
+def _seed_stale_success(gateway: MockPaymentGateway, payment_id: str = "pay_stale") -> BatchEvent:
+    """The failure webhook is delivered; the authorization and capture that
+    follow are dropped. Evidence reads FAILED at full confidence while the
+    gateway has already captured the payment."""
+    gateway.create_payment(CreatePaymentRequest(payment_id=payment_id, amount=50000))
+    gateway.fail_payment(FailPaymentRequest(payment_id=payment_id))
+    for event in (WebhookEventName.PAYMENT_AUTHORIZED, WebhookEventName.PAYMENT_CAPTURED):
+        gateway.simulate_webhook(
+            SimulateWebhookRequest(
+                entity_id=payment_id,
+                event=event,
+                chaos=ChaosConfig(modes=[ChaosMode.SILENT_DROP]),
+            )
+        )
+    return BatchEvent(payment_id=payment_id, **compliant())
+
+
+def test_retry_does_not_write_to_a_payment_the_gateway_already_captured(
+    orchestrator, gateway
+):
+    """The retry's own status query sees CAPTURED and stops. Nothing relies on
+    the gateway happening to refuse a second capture: no simulated
+    authorization, no capture call, no new event in the payment's history."""
+    event = _seed_stale_success(gateway)
+    history_before = [e.event_id for e in gateway.get_payment_status("pay_stale").event_history]
+    log_before = len(gateway.transition_log["pay_stale"])
+
+    trace = orchestrator.run_batch([event]).events[0]
+
+    assert trace.resolved_state is CanonicalState.FAILED
+    assert trace.final_action is RecommendedAction.RETRY_SOFT
+    assert trace.execution.calls == ["GET /payments/{id}/status"]
+    assert trace.execution.succeeded is False
+    assert trace.execution.reconciled is True
+    assert "already captured" in trace.execution.detail
+    assert trace.outcome is EventOutcome.NEEDS_REVIEW
+    assert trace.failed_stage is PipelineStage.EXECUTE
+    assert trace.needs_review_reason == trace.execution.detail
+
+    after = gateway.get_payment_status("pay_stale")
+    assert after.payment.state.value == "CAPTURED"
+    assert [e.event_id for e in after.event_history] == history_before
+    # No write was attempted, so the gateway logged nothing new about it.
+    assert len(gateway.transition_log["pay_stale"]) == log_before
+
+
+def test_retry_still_captures_a_payment_that_is_only_authorized(orchestrator, gateway):
+    """Capturing an authorized payment completes the original charge rather
+    than creating a second one, so that case still proceeds."""
+    gateway.create_payment(CreatePaymentRequest(payment_id="pay_auth", amount=50000))
+    gateway.fail_payment(FailPaymentRequest(payment_id="pay_auth"))
+    gateway.simulate_webhook(
+        SimulateWebhookRequest(
+            entity_id="pay_auth",
+            event=WebhookEventName.PAYMENT_AUTHORIZED,
+            chaos=ChaosConfig(modes=[ChaosMode.SILENT_DROP]),
+        )
+    )
+    trace = orchestrator.run_batch([BatchEvent(payment_id="pay_auth", **compliant())]).events[0]
+
+    assert trace.execution.calls == ["GET /payments/{id}/status", "POST /payments/retry"]
+    assert trace.outcome is EventOutcome.RECOVERED
+    # Only the capture was outstanding: no second authorization was emitted.
+    events = [e.event.value for e in gateway.get_payment_status("pay_auth").event_history]
+    assert events.count("payment.authorized") == 0
+
+
+def test_an_unclassified_exception_is_attributed_to_the_stage_that_raised_it(
+    gateway, clock, tmp_path
+):
+    """A stage that raises something other than StageError is still named
+    correctly, not blamed on Observe."""
+    event = seed_standard_failure(gateway)
+
+    class ExplodingPolicy:
+        def validate(self, *args, **kwargs):
+            raise KeyError("boom")
+
+    orchestrator = AgentOrchestrator(
+        gateway=gateway,
+        intelligence=IntelligenceLayer(llm_client=retry_stub(), clock=clock),
+        clock=clock,
+        results_path=tmp_path / "batch_results.json",
+    )
+    # Bypass _validate's own wrapper to reach the catch-all.
+    orchestrator._validate = lambda *a, **k: ExplodingPolicy().validate()
+    trace = orchestrator.run_batch([event]).events[0]
+
+    assert trace.outcome is EventOutcome.NEEDS_REVIEW
+    assert trace.failed_stage is PipelineStage.VALIDATE
+    assert "unhandled error" in trace.needs_review_reason
+
+
+def test_trace_records_which_model_answered_and_why_one_did_not(
+    gateway, clock, tmp_path
+):
+    """Model identity and the reason a model was not used both reach the
+    trace log, so a run can tell a stub from a live model and an ambiguity
+    short-circuit from a provider failure."""
+    standard = seed_standard_failure(gateway)
+    ambiguous = seed_ambiguous(gateway, clock)
+
+    class BrokenClient:
+        model = "broken-model"
+
+        def recommend(self, system_prompt, user_content):
+            raise RuntimeError("provider down")
+
+    answered = AgentOrchestrator(
+        gateway=gateway,
+        intelligence=IntelligenceLayer(llm_client=retry_stub(), clock=clock),
+        clock=clock,
+        results_path=tmp_path / "a.json",
+    ).run_batch([standard, ambiguous]).events
+    assert answered[0].model == "stub-model"
+    assert answered[0].short_circuit_reason is None
+    assert answered[1].model is None
+    assert answered[1].short_circuit_reason == "tracer_ambiguous"
+
+    gateway.create_payment(CreatePaymentRequest(payment_id="pay_second", amount=50000))
+    gateway.fail_payment(FailPaymentRequest(payment_id="pay_second"))
+    failed = AgentOrchestrator(
+        gateway=gateway,
+        intelligence=IntelligenceLayer(llm_client=BrokenClient(), clock=clock),
+        clock=clock,
+        results_path=tmp_path / "b.json",
+    ).run_batch([BatchEvent(payment_id="pay_second", **compliant())]).events[0]
+    assert failed.llm_called is False
+    assert failed.short_circuit_reason == "llm_call_failed"
+    assert failed.model is None
+
+
+# --------------------------------------------------------------------------
+# The review list tells a person why they are looking at the event
+# --------------------------------------------------------------------------
+def test_review_reason_for_an_injection_escalation_is_the_guard_not_the_model(
+    gateway, clock, tmp_path
+):
+    """The stub model argued for a retry; the guard escalated. A reviewer
+    handed the model's reasoning would be told the opposite of what happened."""
+    event = seed_adversarial(gateway)
+    orchestrator = AgentOrchestrator(
+        gateway=gateway,
+        intelligence=IntelligenceLayer(llm_client=retry_stub(), clock=clock),
+        clock=clock,
+        results_path=tmp_path / "batch_results.json",
+    )
+    item = orchestrator.run_batch([event]).needs_human_review[0]
+    assert item.reason.startswith("injection_guard:")
+    assert item.final_action is RecommendedAction.ESCALATE_HUMAN
+
+
+def test_review_reason_for_a_confirmed_failure_is_what_the_status_query_found(
+    orchestrator, gateway, clock
+):
+    event = seed_ambiguous(gateway, clock)
+    results = orchestrator.run_batch([event])
+    trace, item = results.events[0], results.needs_human_review[0]
+    assert trace.outcome is EventOutcome.ESCALATED
+    assert item.reason == trace.execution.detail
+    assert item.reason.startswith("status query returned FAILED")
+
+
+def test_review_item_names_no_action_when_none_was_decided(orchestrator):
+    """An event that stopped at Observe never had an action chosen for it."""
+    results = orchestrator.run_batch([BatchEvent(payment_id="pay_missing", **compliant())])
+    item = results.needs_human_review[0]
+    assert item.final_action is None
+    assert "not found" in item.reason
+
+
+def test_a_row_whose_amount_disagrees_with_the_payment_is_not_evaluated(
+    orchestrator, gateway
+):
+    """Every RBI threshold is checked against the row's amount, so a row that
+    names a payment but carries a different amount must stop at Observe. Here
+    a Rs.25,000 payment is presented as Rs.500, which would otherwise slip
+    under the Rs.15,000 AFA threshold."""
+    gateway.create_payment(CreatePaymentRequest(payment_id="pay_big", amount=2_500_000))
+    gateway.fail_payment(FailPaymentRequest(payment_id="pay_big"))
+    trace = orchestrator.run_batch(
+        [BatchEvent(payment_id="pay_big", **compliant(amount=50_000))]
+    ).events[0]
+
+    assert trace.outcome is EventOutcome.NEEDS_REVIEW
+    assert trace.failed_stage is PipelineStage.OBSERVE
+    assert "2500000 INR" in trace.needs_review_reason
+    assert trace.execution is None
+    assert gateway.payments["pay_big"].state.value == "FAILED"
+
+
+def test_batch_rows_are_inr_only():
+    """The thresholds are rupee figures; a non-INR row is rejected at the
+    boundary rather than compared against them as if it were rupees."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        BatchEvent(payment_id="pay_usd", currency="USD", **compliant())
+
+
+def test_a_batch_naming_a_payment_twice_is_rejected_before_anything_runs(
+    orchestrator, gateway
+):
+    event = seed_standard_failure(gateway)
+    with pytest.raises(ValueError, match="more than once"):
+        orchestrator.run_batch([event, event])
+    # Rejected up front: the payment was not touched.
+    assert gateway.payments["pay_standard"].state.value == "FAILED"
+
+
+def test_an_in_flight_payment_is_not_described_as_one_that_did_not_fail(
+    orchestrator, gateway
+):
+    """Inside the silence window nothing has failed yet -- but nothing has
+    succeeded either, so the record must not claim the payment is fine."""
+    gateway.create_payment(CreatePaymentRequest(payment_id="pay_fresh", amount=50000))
+    trace = orchestrator.run_batch(
+        [BatchEvent(payment_id="pay_fresh", **compliant())]
+    ).events[0]
+    assert trace.resolved_state is CanonicalState.CREATED
+    assert trace.outcome is EventOutcome.NO_ACTION
+    assert "still within the silence window" in trace.execution.detail
+    assert "did not fail" not in trace.execution.detail
+
+
+def test_trace_records_which_personal_data_was_redacted(orchestrator, gateway):
+    gateway.create_payment(CreatePaymentRequest(payment_id="pay_pii", amount=50000))
+    gateway.fail_payment(FailPaymentRequest(payment_id="pay_pii"))
+    trace = orchestrator.run_batch(
+        [BatchEvent(payment_id="pay_pii", customer_note="call 9876543210", **compliant())]
+    ).events[0]
+    assert trace.pii_redacted == ["phone"]
+    assert "9876543210" not in trace.model_dump_json()
+
+
+# --------------------------------------------------------------------------
+# Retries are idempotent and counted at the gateway
+# --------------------------------------------------------------------------
+def test_a_retry_is_sent_under_an_idempotency_key_and_counted(orchestrator, gateway):
+    event = seed_standard_failure(gateway)
+    trace = orchestrator.run_batch([event]).events[0]
+
+    assert trace.execution.calls == ["GET /payments/{id}/status", "POST /payments/retry"]
+    assert trace.execution.idempotency_key == "revora-retry:pay_standard:1"
+    assert trace.outcome is EventOutcome.RECOVERED
+    assert gateway.payments["pay_standard"].recovery_attempts == 1
+
+
+def test_the_attempt_number_continues_from_the_callers_count(orchestrator, gateway):
+    gateway.create_payment(CreatePaymentRequest(payment_id="pay_second_try", amount=50000))
+    gateway.fail_payment(FailPaymentRequest(payment_id="pay_second_try"))
+    trace = orchestrator.run_batch(
+        [BatchEvent(payment_id="pay_second_try", **compliant(retry_count=1))]
+    ).events[0]
+    assert trace.execution.idempotency_key == "revora-retry:pay_second_try:2"
+
+
+def test_the_gateways_recorded_attempts_count_toward_the_retry_limit(orchestrator, gateway):
+    """The row says no retries were made, but the gateway has recorded three.
+    The limit is checked against the larger figure, so the row cannot
+    under-count its way past MAX_RETRIES."""
+    gateway.create_payment(CreatePaymentRequest(payment_id="pay_counted", amount=50000))
+    gateway.fail_payment(FailPaymentRequest(payment_id="pay_counted"))
+    gateway.payments["pay_counted"].recovery_attempts = 3
+
+    trace = orchestrator.run_batch(
+        [BatchEvent(payment_id="pay_counted", **compliant(retry_count=0))]
+    ).events[0]
+    assert trace.outcome is EventOutcome.BLOCKED
+    assert trace.rule_id == "MAX_RETRIES_EXCEEDED"
+    assert "3 retry attempt(s)" in trace.blocked_reason
+
+
+
+def test_a_retry_charges_a_new_attempt_and_verifies_that_attempt(orchestrator, gateway):
+    event = seed_standard_failure(gateway)
+    trace = orchestrator.run_batch([event]).events[0]
+
+    assert trace.outcome is EventOutcome.RECOVERED
+    assert trace.execution.charged_payment_id == "pay_standard_attempt1"
+    assert trace.execution.charged_amount == 50000
+    assert trace.execution.discount_applied == 0
+    assert trace.verification.observed_state == "CAPTURED"
+    assert gateway.payments["pay_standard"].state.value == "FAILED"
+
+
+def test_the_approved_discount_is_applied_to_the_retry(orchestrator, gateway):
+    gateway.create_payment(CreatePaymentRequest(payment_id="pay_disc", amount=50000))
+    gateway.fail_payment(FailPaymentRequest(payment_id="pay_disc"))
+    trace = orchestrator.run_batch(
+        [BatchEvent(payment_id="pay_disc", **compliant(discount_amount=10000))]
+    ).events[0]
+    assert trace.outcome is EventOutcome.RECOVERED
+    assert trace.execution.charged_amount == 40000
+    assert trace.execution.discount_applied == 10000
+
+
+def test_a_retry_is_not_repeated_once_an_earlier_attempt_was_captured(
+    orchestrator, gateway
+):
+    """The original payment stays FAILED after a successful retry, so a later
+    run must look at the earlier attempts, not only the original."""
+    event = seed_standard_failure(gateway)
+    first = orchestrator.run_batch([event]).events[0]
+    assert first.outcome is EventOutcome.RECOVERED
+
+    second = orchestrator.run_batch([event]).events[0]
+    assert second.execution.calls == ["GET /payments/{id}/status"]
+    assert second.execution.reconciled is True
+    assert "pay_standard_attempt1" in second.execution.detail
+    assert second.outcome is EventOutcome.NEEDS_REVIEW
+    assert gateway.payments["pay_standard"].retry_attempt_ids == ["pay_standard_attempt1"]
+
+
+
+def test_order_paid_without_a_delivered_capture_is_reconciled_not_retried(
+    orchestrator, gateway
+):
+    """The capture webhook is dropped but order.paid arrives. The payment
+    must be checked, found captured and reconciled -- never retried."""
+    gateway.create_payment(CreatePaymentRequest(payment_id="pay_op", amount=50000))
+    gateway.fail_payment(FailPaymentRequest(payment_id="pay_op"))
+    for name in (WebhookEventName.PAYMENT_AUTHORIZED, WebhookEventName.PAYMENT_CAPTURED):
+        gateway.simulate_webhook(
+            SimulateWebhookRequest(
+                entity_id="pay_op", event=name, chaos=ChaosConfig(modes=[ChaosMode.SILENT_DROP])
+            )
+        )
+    gateway.simulate_webhook(
+        SimulateWebhookRequest(entity_id="pay_op", event=WebhookEventName.ORDER_PAID)
+    )
+
+    trace = orchestrator.run_batch([BatchEvent(payment_id="pay_op", **compliant())]).events[0]
+    assert trace.resolution_reason == "order_paid_unconfirmed"
+    assert trace.ambiguous is True
+    assert trace.final_action is RecommendedAction.REQUEST_VERIFICATION
+    assert trace.execution.reconciled is True
+    assert trace.outcome is EventOutcome.RECOVERED
+    assert gateway.payments["pay_op"].retry_attempt_ids == []
