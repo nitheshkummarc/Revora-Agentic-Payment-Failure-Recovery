@@ -173,12 +173,13 @@ All eight components are built.
 | Recommendation layer | 115 |
 | Policy engine | 80 |
 | Orchestrator + verify | 48 |
+| Planning agent, its tools, and the agent demo API | 25 |
 | Batch runner (client selection, reproducibility, report figures) | 10 |
 | API / CORS scoping | 9 |
 | Synthetic dataset generator | 53 |
-| X-Ray dashboard | 102 |
+| Web app (`web/`) | 14 |
 
-**435 backend + 102 frontend = 537 tests passing**, plus 18 skipped by default.
+**460 backend + 14 frontend = 474 tests passing**, plus 18 skipped by default.
 Every count in that table came from running the file directly
 (`pytest -q backend/tests/test_<name>.py`) and reading its summary line. None of
 it is a shared total divided up by hand.
@@ -272,9 +273,9 @@ nothing to produce and can't drift from the run it describes.
 Override rate is overrides ÷ model consultations (392), not ÷ 500. The other 108
 rows never consulted the model, so they carry no override risk to count. None of
 this is evidence about a real model's judgement, since the committed batch runs
-`StubLLMClient`. Every trace records which model answered, and the dashboard
-names it from that field. On this run it reads "Offline stub model", so the
-screen says it too, not just this file.
+`StubLLMClient`. Every trace records which model answered, and the web app's
+results section says the run uses a scripted model, so the screen says it too,
+not just this file.
 
 ### Naive-baseline comparison
 
@@ -359,7 +360,7 @@ pins 3.11).
 
 ```bash
 pip install -r backend/requirements-dev.txt    # runtime deps + pytest; the app alone needs only requirements.txt
-python -m pytest -q                                # 435 passed, 18 skipped (no key); 453 passed (with a key)
+python -m pytest -q                                # 460 passed, 18 skipped (no key); 478 passed (with a key)
 uvicorn app.main:app --reload --app-dir backend    # http://localhost:8000
 ```
 
@@ -370,77 +371,52 @@ is unaffected.
 
 ### Generating a batch run
 
-The dashboard renders a completed batch run, so one has to exist first.
-`data/batch_results.json` is committed, so you only need this to regenerate it:
+The web app's results section and recorded agent runs come from a completed
+batch run. `data/batch_results.json` is committed, so you only need this to
+regenerate it:
 
 ```bash
 python data/generate_synthetic_dataset.py    # 500 events -> data/synthetic_events_500.json
 python data/run_batch.py --stub              # replay against the offline stub -> data/batch_results.json
 python data/run_batch.py                     # same, but uses a real model if a key is set
+python data/export_web_data.py               # rebundle the web app's data -> web/src/data/site.json
 ```
 
 Use `--stub` to reproduce the committed baseline. Without it, and with a key in
 `.env`, the batch makes real API calls: 392 decisions plus a note-free check for
 each retry answer that came with a note, so up to about 700 calls.
 
-### Dashboard
+### Frontend
 
 ```bash
-cd frontend
+cd web
 npm install
-npm run sync-data     # REQUIRED before the dashboard can render
 npm run dev           # http://localhost:5173
+npm test              # 14 offline tests, no servers needed
+npm run build         # type-check + production build -> web/dist/
 ```
 
-`npm run sync-data` copies `data/batch_results.json` into `frontend/public/`,
-which is where the dashboard reads it from when no run id is given. That copy is
-gitignored on purpose, so there's one source of truth for a run rather than two
-files free to drift apart. On a fresh clone it doesn't exist yet, and the page
-shows a load error until you run it.
-
-`npm run dev`, `npm run build` and `npm test` all run it automatically first.
-`npm run build` also runs a freshness check (`npm run check-dist-fresh`) before
-`npm run preview` serves the built output, so a build made before the last data
-regeneration fails loudly instead of quietly serving stale numbers.
-
-Two ways to load a run:
-
-| URL | Source |
-|---|---|
-| `http://localhost:5173/` | the synced snapshot |
-| `http://localhost:5173/?run=<batch_run_id>` | `GET /api/batch-results/<id>`, served by the backend |
-
-"Served by the backend" means the backend reads the run from disk. It doesn't
-compute it: no route runs a batch, so the id has to be the run currently in
-`data/batch_results.json`.
-
-The header tells you which one it used.
-
-Besides the event feed and the policy block log, a **review queue** tab lists
-every event the run handed to a person, with the reason it's there. It can be
-filtered by outcome, opens any item's full trace, and downloads as CSV.
-Recording a reviewer's decision would need durable storage and authentication,
-which this build doesn't have, so the queue is a working view rather than a
-place to record decisions.
-
-### Frontend tests
-
-```bash
-npm test              # 102 offline tests, no servers needed
-npm run test:live     # end-to-end; needs backend on :8000 and a served dashboard
-```
+The site works with no backend: the results figures and one scripted agent run
+per scenario are bundled in `web/src/data/site.json`. Set `VITE_API_URL` in
+`web/.env` (or the Vercel project) to the API's URL to run the agent live from
+the console. `?scenario=<name>` opens the console on a given scenario.
 
 ## Backend routes
 
-Nine routes, and only one of them matters to the dashboard. The rest let you
-drive the server's mock gateway by hand. The batch runner doesn't use them: it
-builds its own gateway in-process and calls the same operations directly, so a
-payment created over HTTP never appears in a batch run.
+Eleven routes. The web app uses the two agent routes, the batch-results route
+serves the committed run as JSON, and the rest let you drive the server's mock
+gateway by hand.
+The batch runner doesn't use them: it builds its own gateway in-process and
+calls the same operations directly, so a payment created over HTTP never
+appears in a batch run. With `REVORA_HIDE_GATEWAY_ROUTES` set, as on the public
+server, the gateway routes are not mounted at all.
 
 | Method | Path | What it does |
 |---|---|---|
 | `GET` | `/health` | Liveness check. Returns `{"status":"ok"}`. |
-| `GET` | `/api/batch-results/{batch_run_id}` | The completed batch run the dashboard renders. Looked up in an in-memory store (capped at 20 runs), then in the JSON file on disk. The store is only filled when a batch runs inside the server process, which no route does, so in practice this reads the file. Unknown id returns 404. |
+| `GET` | `/api/agent/scenarios` | One runnable payment per dataset scenario, and whether live model runs are available. |
+| `POST` | `/api/agent/run` | Runs the planning agent on one scenario (`{"payment_id": ..., "live": false}`) against a gateway built for that request, and returns the full trace including every tool call. Scripted unless `live` is set and the live agent is configured. Rate-limited per visitor, with a tighter limit and a global hourly cap on live runs; 429 when exceeded. |
+| `GET` | `/api/batch-results/{batch_run_id}` | A completed batch run, as JSON. Looked up in an in-memory store (capped at 20 runs), then in the JSON file on disk. The store is only filled when a batch runs inside the server process, which no route does, so in practice this reads the file. Unknown id returns 404. |
 | `POST` | `/payments/create` | Create a payment in the mock gateway. |
 | `POST` | `/payments/fail` | Fail a payment, with an error object and optional chaos mode. |
 | `POST` | `/payments/capture` | Capture an authorized payment. Refuses if the payment isn't in a capturable state. |
@@ -450,7 +426,7 @@ payment created over HTTP never appears in a batch run.
 | `POST` | `/webhooks/simulate` | Emit a webhook event, subject to whatever chaos mode is configured. |
 
 There's no route at `/`, so hitting `http://localhost:8000` directly returns a
-404. That's expected: this serves JSON, not HTML. The dashboard is on `:5173`.
+404. That's expected: this serves JSON, not HTML. The web app is on `:5173`.
 `/docs` gives you the generated Swagger UI if you want to poke at any of the
 above by hand.
 
@@ -462,7 +438,7 @@ scope](#deliberately-out-of-scope).
 ```
 backend/    FastAPI app: the 6 deterministic + model-driven modules and their tests
 data/       standalone dataset generator, the batch runner, and the generated JSON artifacts
-frontend/   React dashboard that renders one batch run — read-only, no write path
+web/        frontend: the public web app (React, Tailwind) with the agent console
 docs/       architecture and evaluation-methodology notes (supplementary to this file)
 ```
 
@@ -470,16 +446,18 @@ docs/       architecture and evaluation-methodology notes (supplementary to this
 backend/app/gateway/         mock gateway + fault injection
 backend/app/state_machine/   resolves a payment's true state from delivered evidence
 backend/app/tracer/          root cause, causal chain, confidence, ambiguity
-backend/app/intelligence/    prompt construction, sanitiser, model client, safety guards
+backend/app/intelligence/    prompt construction, sanitiser, model clients, the agent loop, safety guards
 backend/app/policy/          the rules, and the engine that applies them in order
-backend/app/orchestrator/    the loop, the batch runner integration, the results endpoint
+backend/app/orchestrator/    the loop, the agent's read-only toolbox, the results endpoint
+backend/app/demo/            agent demo API: seeding one scenario, rate limits, routes
+web/                         the public web app (React, Tailwind) with the agent console
 backend/app/orchestrator/schemas.py  the API contract, kept apart from the loop that fills it in
 backend/tests/                one test_*.py per module above
 data/generate_synthetic_dataset.py   standalone; imports nothing from backend/
 data/run_batch.py                    replays the dataset through the orchestrator
-frontend/src/                 react dashboard components, api client, metrics
-frontend/src/__tests__/       offline test suite (102 tests)
-frontend/src/__live__/        end-to-end tests against a real backend + served build
+data/export_web_data.py              bundles the web app's data into web/src/data/site.json
+web/src/components/           page sections, including the agent console
+web/src/__tests__/            offline test suite (14 tests)
 ```
 
 ## Configuration
@@ -499,7 +477,10 @@ request quota a batch can exhaust partway through.
 |---|---|---|
 | `GROQ_API_KEY` | unset | Default model provider (GPT-OSS-120B). Free tier at [console.groq.com](https://console.groq.com). |
 | `GEMINI_API_KEY` | unset | Fallback provider, used automatically if `GROQ_API_KEY` fails or errors, or alone if only this key is set. Free tier at [ai.google.dev](https://ai.google.dev); `GOOGLE_API_KEY` works too. See [What's proven and what isn't](#whats-proven-and-what-isnt) for its live-verification status. |
-| `REVORA_CORS_ORIGINS` | `http://localhost:5173, http://127.0.0.1:5173, http://localhost:4173, http://127.0.0.1:4173` | Comma-separated origins allowed to read the API. Scoped rather than `*`, since nothing here needs to be readable by any page on the internet. |
+| `REVORA_CORS_ORIGINS` | `http://localhost:5173, http://127.0.0.1:5173, http://localhost:4173, http://127.0.0.1:4173` | Comma-separated origins allowed to call the API (`GET`, and `POST` for agent runs). Scoped rather than `*`; on the deployed API this is the web app's Vercel URL. |
+| `REVORA_AGENT_LIVE` | off | Allows the agent demo API to run the live model. Also needs `GROQ_API_KEY`. Without it every run uses the scripted agent. |
+| `REVORA_HIDE_GATEWAY_ROUTES` | off | Leaves the mock gateway's unauthenticated write routes out of the API. Set on any public server. |
+| `VITE_API_URL` | unset | Web app only (`web/.env` or the Vercel project): the API's URL, for live agent runs. Without it the site uses its bundled recorded runs. |
 | `REVORA_DISABLE_LLM` | off | Kill switch. Forces the same fail-safe escalation as a missing client without touching how the layer is wired. Reads `""`/`0`/`false`/`no`/`off` (case-insensitive) as off; anything else is on. |
 | `REVORA_DISABLED_RULES` | unset | Comma-separated `RuleId` names to skip, for turning off a threshold quickly during a demo. Reaches only the four rules with no regulatory basis: `MAX_DISCOUNT_EXCEEDED`, `DISCOUNT_EXCEEDS_AMOUNT`, `MAX_RETRIES_EXCEEDED`, `TRACE_CONFIDENCE_BELOW_THRESHOLD`. Nothing that enforces the circular can be switched off: not the opt-out, the missing-field gates, the pre-debit notice, the mandate ceiling, or either AFA threshold. Any other name gets logged as unrecognised rather than silently accepted. |
 

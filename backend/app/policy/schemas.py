@@ -76,7 +76,7 @@ class PolicyDecision(StrictModel):
     """The policy verdict.
 
     `approved`, `blocked_reason` and `final_action` are the contract; everything
-    else is audit detail for the dashboard.
+    else is audit detail for the trace.
     """
 
     payment_id: str

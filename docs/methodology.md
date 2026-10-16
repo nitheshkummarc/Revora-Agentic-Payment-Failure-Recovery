@@ -130,7 +130,8 @@ answer. Unit tests cover that check; the batch says nothing about it.
 
 What the batch consequently **cannot** show: anything about a real model's
 judgement. The README says this at the point where the numbers appear rather
-than only in a footnote, and the dashboard states the same provenance on screen.
+than only in a footnote, and the web app's results section states the same
+provenance on screen.
 
 ### The live tests exist to prove the other thing
 
@@ -195,7 +196,7 @@ back to the final action when no guard fired) and classifies it against the
 money-moving action set. `reference.md` records both the corrected figure and the
 fact that the earlier one was an artifact. The same flaw also sat in the product
 itself: the guard recorded an "override" on those no-op cases, which would have
-inflated the dashboard's override rate on any live run. The guard now records an
+inflated the reported override rate on any live run. The guard now records an
 override only when it actually changes the answer.
 
 **What this changed, and what it did not.** It changed attribution only. In both

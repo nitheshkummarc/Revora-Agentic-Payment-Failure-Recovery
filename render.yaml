@@ -1,0 +1,33 @@
+# Render Blueprint for the Revora API (the agent backend the web app calls for
+# live runs). Free plan: the service sleeps when idle and takes up to a minute
+# to wake, which the web app tells the visitor.
+#
+# Commands run from the repository root: the agent demo reads the dataset in
+# data/, beside backend/.
+services:
+  - type: web
+    name: revora-api
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      # The mock gateway's write routes are unauthenticated; keep them off a
+      # public server. The agent demo builds its own gateway per run.
+      - key: REVORA_HIDE_GATEWAY_ROUTES
+        value: "1"
+      # Allow live model runs. They also need GROQ_API_KEY below.
+      - key: REVORA_AGENT_LIVE
+        value: "1"
+      # Secrets and deployment-specific values, entered in the Render
+      # dashboard when the Blueprint is created.
+      - key: GROQ_API_KEY
+        sync: false
+      # The Vercel URL of the web app, e.g. https://revora.vercel.app
+      - key: REVORA_CORS_ORIGINS
+        sync: false

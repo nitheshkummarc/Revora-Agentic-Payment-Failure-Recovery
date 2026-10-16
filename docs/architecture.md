@@ -108,7 +108,19 @@ injection attempt, which escalates to a person instead, so the attempt is seen
 even when a status check would have closed the case. The rule is the same on
 every path: a flagged note always ends at `ESCALATE_HUMAN`.
 
-The guards run *after* the model and are not model-dependent. The injection
+The model can be consulted in two ways. In a single call, it sees the tracer's
+output and answers. As the planning agent (`agent.py`), it first investigates
+with four read-only tools: the payment's current gateway status, the mandate's
+compliance facts, the retry history, and a dry run of the policy engine. It
+stops when it has enough, or after five lookups, and then gives its proposal
+through the same strict structured output a single call uses, with the lookup
+results added to its input above the untrusted note. The tools are passed in by
+the orchestrator as plain read-only functions; this module still imports no
+gateway code, and there is no tool that writes. The loop is written directly on
+the provider's tool-calling API rather than a framework, so every limit and
+fallback is explicit. A scripted agent runs the same loop offline.
+
+The guards run *after* the model, on either path, and are not model-dependent. The injection
 guard forces `ESCALATE_HUMAN` when the customer note matched an instruction-like
 pattern, regardless of what came back. It records an override only when it
 actually changed the answer, so a model that refused on its own is credited
@@ -170,7 +182,15 @@ gateway code. Deterministic, source-scanned.
 Owns the sequential pipeline — Observe, Trace, Plan, Validate, Execute, Verify —
 and the batch run that drives 500 rows through it. It is the only module that
 holds all the others together, and correspondingly the only one that imports
-from all of them. Nothing imports from it.
+from all of them. Only the batch runner and the agent demo (`app/demo/`), which
+replays one scenario per request on its own gateway, import from it.
+
+In agent mode, Plan builds the agent's toolbox (`agent_tools.py`) for the
+payment and hands it to the recommendation layer. The toolbox reads the gateway
+and runs the policy engine on hypothetical decisions; it returns states and
+facts, never webhook payloads or the customer note. The agent's proposal then
+goes through Validate, Execute and Verify exactly like a single-call
+recommendation.
 
 Execute and Verify both check gateway truth, at different moments. A retry
 begins with a status query and refuses to write if the payment, or any earlier
@@ -187,7 +207,7 @@ as a recovery. `REQUEST_VERIFICATION` has nothing to verify afterwards — its
 status query is the check — and records that rather than reporting a re-read as
 a pass. The pipeline logic lives in
 `orchestrator.py` and the API contract in `schemas.py`, kept apart so the shape
-served to the dashboard does not drift with the loop that fills it in.
+served over the API does not drift with the loop that fills it in.
 
 ---
 
@@ -346,7 +366,7 @@ failed calls a circuit breaker stops calling the model at all
 (`llm_circuit_open`) until a cooldown elapses on the injected clock, so a
 provider outage costs one fail-safe decision per event instead of a full
 timeout-and-retry budget each. Raw exception text is logged server-side only; the reasoning field
-that reaches the dashboard and the audit trail gets a fixed generic code, so
+that reaches the web app and the audit trail gets a fixed generic code, so
 provider internals never leak into a merchant-visible record.
 
 With both provider keys set, one extra chance is added first: `FallbackLLMClient`

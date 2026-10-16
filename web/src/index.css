@@ -1,0 +1,165 @@
+@import "tailwindcss";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+/*
+ * Design tokens. One palette, cool throughout: silver and smoke neutrals with a
+ * single cobalt accent. Outcome colours are data states, used only on outcome
+ * marks, never as decoration.
+ *
+ * Shape rule: containers use the 28px bezel radius (inner core 22px), buttons
+ * and chips are full pills, inline code is 6px. Nothing else.
+ */
+:root {
+  color-scheme: light dark;
+  --bg: #e9ecef;
+  --surface: #f4f6f8;
+  --core: #ffffff;
+  --ink: #14181d;
+  --muted: #56606b;
+  --faint: #7d8792;
+  --line: rgb(20 24 29 / 0.09);
+  --line-strong: rgb(20 24 29 / 0.16);
+  --accent: #2741c4;
+  --accent-ink: #ffffff;
+  --accent-wash: rgb(39 65 196 / 0.07);
+  --shadow: 0 24px 48px -28px rgb(20 30 60 / 0.28);
+
+  --ok: #1f6e4f;
+  --stop: #a23b33;
+  --person: #8a5a0b;
+  --hold: #3f5f7f;
+  --idle: #5f6873;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0c0e11;
+    --surface: #131619;
+    --core: #181c20;
+    --ink: #e8ebee;
+    --muted: #9aa3ad;
+    --faint: #6f7882;
+    --line: rgb(232 235 238 / 0.08);
+    --line-strong: rgb(232 235 238 / 0.15);
+    --accent: #93a6ff;
+    --accent-ink: #0c0e11;
+    --accent-wash: rgb(147 166 255 / 0.1);
+    --shadow: 0 24px 48px -28px rgb(0 0 0 / 0.7);
+
+    --ok: #6fcf9f;
+    --stop: #f0897d;
+    --person: #e3b45c;
+    --hold: #9cb8d6;
+    --idle: #9aa3ad;
+  }
+}
+
+@theme inline {
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, monospace;
+
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-core: var(--core);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-wash: var(--accent-wash);
+  --color-ok: var(--ok);
+  --color-stop: var(--stop);
+  --color-person: var(--person);
+  --color-hold: var(--hold);
+  --color-idle: var(--idle);
+
+  --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@layer base {
+  html {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    scroll-padding-top: 6rem;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  body {
+    min-height: 100dvh;
+  }
+
+  ::selection {
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 999px;
+  }
+}
+
+@layer components {
+  /* Double bezel: an outer tray holding a machined inner core. */
+  .bezel {
+    border-radius: 28px;
+    padding: 6px;
+    background: var(--surface);
+    box-shadow:
+      inset 0 0 0 1px var(--line),
+      var(--shadow);
+  }
+
+  .bezel-core {
+    border-radius: 22px;
+    background: var(--core);
+    box-shadow:
+      inset 0 0 0 1px var(--line),
+      inset 0 1px 0 rgb(255 255 255 / 0.06);
+  }
+
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* One orchestrated moment: the agent's steps appear in order after a run. */
+@media (prefers-reduced-motion: no-preference) {
+  .step-in {
+    animation: step-in 620ms var(--ease-spring) both;
+    animation-delay: calc(var(--i, 0) * 90ms);
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+@keyframes step-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}

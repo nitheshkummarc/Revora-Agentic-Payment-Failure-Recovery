@@ -12,7 +12,7 @@ from typing import List, Literal, Optional
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-from app.intelligence.schemas import RecommendedAction
+from app.intelligence.schemas import AgentStep, RecommendedAction
 from app.state_machine.states import CanonicalState
 
 
@@ -113,7 +113,7 @@ class VerificationRecord(StrictModel):
 class EventTrace(StrictModel):
     """The full decision trail for one event.
 
-    Every field the dashboard needs is here, including `amount`, so figures can
+    Every field a reader of the run needs is here, including `amount`, so figures can
     be summed directly from this log without re-joining the source dataset.
     """
 
@@ -154,6 +154,8 @@ class EventTrace(StrictModel):
     # was proposed. Both are None whenever the guard did not intervene.
     original_llm_action: Optional[RecommendedAction] = None
     guard_override_reason: Optional[str] = None
+    # Tool calls the planning agent made, in order; empty outside agent mode.
+    agent_steps: List[AgentStep] = Field(default_factory=list)
 
     # Validate
     approved: Optional[bool] = None

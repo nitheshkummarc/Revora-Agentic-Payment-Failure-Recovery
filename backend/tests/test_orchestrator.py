@@ -437,7 +437,7 @@ def test_batch_run_id_is_a_uuid(orchestrator, gateway):
 def test_persisted_log_carries_amount_alongside_the_decision_trail(
     gateway, clock, tmp_path
 ):
-    """The dashboard sums money straight from this log, so every entry has to
+    """Reported figures are summed straight from this log, so every entry has to
     carry its own amount rather than needing a join back to the dataset."""
     path = tmp_path / "batch_results.json"
     orchestrator = AgentOrchestrator(

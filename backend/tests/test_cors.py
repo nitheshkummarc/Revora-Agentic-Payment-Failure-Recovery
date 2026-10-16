@@ -1,9 +1,9 @@
 """CORS scoping.
 
-The dashboard is served from a different origin than the API, so some
+The web app is served from a different origin than the API, so some
 allowance is required. What matters is that it is an allowance and not a
 wildcard: a public demo with `*` invites any page on the internet to read the
-endpoint. Nothing here is credentialed or writable, so a wildcard would not
+endpoint. Nothing here is credentialed, so a wildcard would not
 have leaked anything, but the narrower list costs nothing and these tests stop
 it drifting back.
 """
@@ -17,14 +17,14 @@ from app.main import DEFAULT_CORS_ORIGINS, app
 
 client = TestClient(app)
 
-DASHBOARD_ORIGIN = "http://localhost:5173"
+WEB_ORIGIN = "http://localhost:5173"
 FOREIGN_ORIGIN = "https://evil.example.com"
 
 
-def test_the_dashboard_origin_is_allowed():
-    response = client.get("/health", headers={"Origin": DASHBOARD_ORIGIN})
+def test_the_web_app_origin_is_allowed():
+    response = client.get("/health", headers={"Origin": WEB_ORIGIN})
     assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == DASHBOARD_ORIGIN
+    assert response.headers["access-control-allow-origin"] == WEB_ORIGIN
 
 
 @pytest.mark.parametrize("origin", DEFAULT_CORS_ORIGINS)
@@ -50,23 +50,25 @@ def test_the_allowance_is_not_a_wildcard():
     assert response.headers.get("access-control-allow-origin") != "*"
 
 
-def test_preflight_offers_only_read_methods():
-    """A read-only dashboard has no reason to be granted a write verb."""
+def test_preflight_offers_only_get_and_post():
+    """GET for reading results, POST for the agent demo's run endpoint, which
+    acts only on a sandbox gateway built per request. Nothing that edits or
+    deletes is offered."""
     response = client.options(
-        "/api/batch-results/some-run",
+        "/api/agent/run",
         headers={
-            "Origin": DASHBOARD_ORIGIN,
-            "Access-Control-Request-Method": "GET",
+            "Origin": WEB_ORIGIN,
+            "Access-Control-Request-Method": "POST",
         },
     )
     allowed = response.headers.get("access-control-allow-methods", "")
-    assert "GET" in allowed
-    for verb in ("POST", "PUT", "DELETE", "PATCH"):
+    assert "GET" in allowed and "POST" in allowed
+    for verb in ("PUT", "DELETE", "PATCH"):
         assert verb not in allowed
 
 
 def test_credentials_are_not_allowed():
     """Nothing here is authenticated, so no cookie or auth header should ever
     ride along on a cross-origin request."""
-    response = client.get("/health", headers={"Origin": DASHBOARD_ORIGIN})
+    response = client.get("/health", headers={"Origin": WEB_ORIGIN})
     assert response.headers.get("access-control-allow-credentials") != "true"

@@ -596,7 +596,7 @@ def test_generator_rejects_a_count_outside_the_required_range(generator):
 
 
 def test_generator_output_matches_the_committed_file(generator, dataset):
-    """The committed dataset is what the batch run and the dashboard read. If
+    """The committed dataset is what the batch run and the web app export read. If
     it drifts from what the generator now produces, one of them is stale."""
     regenerated = generator.generate(count=dataset["count"], seed=dataset["seed"])
     assert regenerated == dataset

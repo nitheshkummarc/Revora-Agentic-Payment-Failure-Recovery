@@ -626,7 +626,7 @@ def test_llm_failure_escalates_rather_than_guessing():
 def test_llm_failure_does_not_leak_exception_detail_into_the_audit_trail():
     """The exception text may carry SDK/network internals (auth headers,
     hostnames, stack fragments). reasoning and short_circuit_reason reach the
-    dashboard, so neither may contain it -- the detail belongs in the
+    API and the web app, so neither may contain it -- the detail belongs in the
     server-side log only."""
     secret_detail = "connection reset by peer at proxy-internal-7f3a.example:443"
 

@@ -46,14 +46,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
 from app.core.config import GatewaySettings  # noqa: E402
+from app.demo.seeding import BatchClock, apply_step  # noqa: E402
 from app.gateway.mock_gateway import MockPaymentGateway  # noqa: E402
-from app.gateway.schemas import (  # noqa: E402
-    ChaosConfig,
-    CreatePaymentRequest,
-    ErrorObject,
-    FailPaymentRequest,
-    SimulateWebhookRequest,
-)
 from app.intelligence.schemas import RecommendedAction  # noqa: E402
 from app.intelligence.llm_client import (  # noqa: E402
     FallbackLLMClient,
@@ -76,20 +70,6 @@ RESULTS_PATH = Path(__file__).resolve().parent / "batch_results.json"
 PAISE_PER_RUPEE = 100
 
 
-class BatchClock:
-    """A clock the caller moves explicitly. Nothing here sleeps."""
-
-    def __init__(self, start: datetime) -> None:
-        self.t = start
-
-    def __call__(self) -> datetime:
-        return self.t
-
-    def set(self, moment: datetime) -> datetime:
-        self.t = moment
-        return self.t
-
-
 def _rupees(paise: int) -> str:
     return f"Rs.{paise / PAISE_PER_RUPEE:,.2f}"
 
@@ -100,47 +80,6 @@ def failure_rate(value: str) -> float:
     if not 0.0 <= rate <= 1.0:
         raise argparse.ArgumentTypeError(f"must be between 0 and 1, got {value}")
     return rate
-
-
-def _chaos_config(raw: Dict[str, Any] | None) -> ChaosConfig | None:
-    return ChaosConfig(**raw) if raw else None
-
-
-def apply_step(gateway: MockPaymentGateway, step: Dict[str, Any]) -> None:
-    """Execute one declared gateway operation.
-
-    An unrecognised op raises rather than being skipped: a dataset the runner
-    only partly understands would seed payments into states the rows do not
-    describe, and every downstream figure would be quietly wrong.
-    """
-    op = step["op"]
-    if op == "create_payment":
-        gateway.create_payment(
-            CreatePaymentRequest(
-                payment_id=step["payment_id"],
-                amount=step["amount"],
-                currency=step["currency"],
-                notes=step["notes"],
-            )
-        )
-    elif op == "fail_payment":
-        gateway.fail_payment(
-            FailPaymentRequest(
-                payment_id=step["payment_id"],
-                error=ErrorObject(**step["error"]),
-                chaos=_chaos_config(step["chaos"]),
-            )
-        )
-    elif op == "simulate_webhook":
-        gateway.simulate_webhook(
-            SimulateWebhookRequest(
-                entity_id=step["payment_id"],
-                event=step["event"],
-                chaos=_chaos_config(step["chaos"]),
-            )
-        )
-    else:
-        raise ValueError(f"unknown gateway seed op: {op!r}")
 
 
 def _select_llm_client(force_stub: bool = False) -> LLMClient:

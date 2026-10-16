@@ -112,7 +112,7 @@ def test_seed_and_run_twice_in_one_process_is_reproducible(run_batch, monkeypatc
 
     seed_and_run() persists to the module-level RESULTS_PATH on every call --
     that is its real job when run as a script, but here it pointed at the real
-    data/batch_results.json (the file the dashboard reads), so running this
+    data/batch_results.json (the file the API and the web export read), so running this
     test silently rewrote the repo's committed batch data as a side effect.
     Redirected to a throwaway path so the test can't touch real repo state."""
     import json

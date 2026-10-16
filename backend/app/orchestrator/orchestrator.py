@@ -24,6 +24,11 @@ perform.
 
 Processing is sequential by design: a batch that can be replayed step by step is
 worth more during debugging than one that finishes faster.
+
+With `agent_mode` on, Plan hands the recommendation layer a read-only toolbox
+(`agent_tools.py`), so the model can check the payment's status, compliance
+facts and retry history before proposing. Nothing else in the loop changes: the
+proposal is still guarded, validated, executed and verified the same way.
 """
 
 from __future__ import annotations
@@ -48,6 +53,7 @@ from app.gateway.schemas import (
 )
 from app.intelligence.llm_client import IntelligenceLayer
 from app.intelligence.schemas import IntelligenceDecision, IntelligenceInput, RecommendedAction
+from app.orchestrator.agent_tools import GatewayAgentToolbox
 from app.orchestrator.schemas import (
     BatchEvent,
     BatchResults,
@@ -82,8 +88,8 @@ SETTLED_SUCCESS_STATES = frozenset({PaymentState.AUTHORIZED, PaymentState.CAPTUR
 #: refunded, or has not failed yet.
 RETRYABLE_STATES = frozenset({PaymentState.FAILED, PaymentState.AUTHORIZED})
 
-#: Where the batch trace log is written so the dashboard can read it without a
-#: database and without losing it when the process restarts.
+#: Where the batch trace log is written so the API and the web export can read
+#: it without a database and without losing it when the process restarts.
 #: Anchored to the repository root rather than the process working directory.
 #: uvicorn is normally started from `backend/`, where a relative path would
 #: resolve to a `data/` directory that does not exist -- the endpoint would then
@@ -119,8 +125,10 @@ class AgentOrchestrator:
         policy: Optional[PolicyEngine] = None,
         clock: Optional[Callable[[], datetime]] = None,
         results_path: Optional[Path] = DEFAULT_RESULTS_PATH,
+        agent_mode: bool = False,
     ) -> None:
         self.gateway = gateway
+        self.agent_mode = agent_mode
         self._clock = clock or _utcnow
         self.resolver = resolver or StateResolver(clock=self._clock)
         self.tracer = tracer or FailurePropagationTracer(clock=self._clock)
@@ -238,7 +246,7 @@ class AgentOrchestrator:
             self._record_trace(trace, trace_result)
 
             stage = PipelineStage.PLAN
-            recommendation = self._plan(event, trace_result)
+            recommendation = self._plan(event, trace_result, retry_count)
             self._record_recommendation(trace, recommendation)
 
             stage = PipelineStage.VALIDATE
@@ -348,17 +356,35 @@ class AgentOrchestrator:
             raise StageError(PipelineStage.TRACE, "tracer returned an unexpected shape")
         return result
 
-    def _plan(self, event: BatchEvent, trace_result: TraceResult) -> IntelligenceDecision:
+    def _plan(
+        self, event: BatchEvent, trace_result: TraceResult, retry_count: int
+    ) -> IntelligenceDecision:
         """Ask for a recommendation. The recommendation layer skips the model
-        entirely when the trace is ambiguous."""
+        entirely when the trace is ambiguous. In agent mode it also gets a
+        read-only toolbox for this payment."""
+        toolbox = (
+            GatewayAgentToolbox(
+                gateway=self.gateway,
+                policy=self.policy,
+                event=event,
+                retry_count=retry_count,
+                trace_confidence=trace_result.confidence,
+                clock=self._clock,
+            )
+            if self.agent_mode
+            else None
+        )
+        request = IntelligenceInput(
+            payment_id=event.payment_id,
+            trace=trace_result,
+            customer_note=event.customer_note,
+            decided_at=self._clock(),
+        )
         try:
-            decision = self.intelligence.recommend(
-                IntelligenceInput(
-                    payment_id=event.payment_id,
-                    trace=trace_result,
-                    customer_note=event.customer_note,
-                    decided_at=self._clock(),
-                )
+            decision = (
+                self.intelligence.recommend(request, toolbox=toolbox)
+                if toolbox is not None
+                else self.intelligence.recommend(request)
             )
         except Exception as exc:
             raise StageError(PipelineStage.PLAN, f"planning failed: {exc}") from exc
@@ -687,6 +713,7 @@ class AgentOrchestrator:
         trace.pii_redacted = list(decision.sanitization.pii_redacted)
         trace.original_llm_action = decision.original_llm_action
         trace.guard_override_reason = decision.guard_override_reason
+        trace.agent_steps = list(decision.agent_steps)
 
     @staticmethod
     def _record_decision(trace: EventTrace, decision: PolicyDecision) -> None:

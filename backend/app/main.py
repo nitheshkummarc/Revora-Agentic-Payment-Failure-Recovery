@@ -24,12 +24,13 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# The dashboard is a separate origin, so it needs an explicit allowance.
+# The web app is a separate origin, so it needs an explicit allowance.
 #
-# Scoped to the origins the dashboard is actually served from rather than "*".
-# Nothing here is credentialed and nothing is writable, so a wildcard would not
-# have leaked anything -- but "*" on a public demo invites any page on the
-# internet to read the endpoint, and the narrower list costs nothing.
+# Scoped to the origins the web app is actually served from rather than "*".
+# Nothing here is credentialed, so a wildcard would not leak anything -- but "*"
+# on a public demo invites any page on the internet to call the API, and the
+# narrower list costs nothing. POST is allowed for the agent demo's run
+# endpoint, which acts only on a sandbox gateway built for that request.
 #
 # Override for a different host with a comma-separated REVORA_CORS_ORIGINS.
 # Vite dev server, then `vite preview`, on both spellings of loopback: a browser
@@ -53,7 +54,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins(),
     allow_credentials=False,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 

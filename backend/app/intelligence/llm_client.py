@@ -17,8 +17,10 @@ Several things live here:
   `IntelligenceLayer` needs no changes to use it.
 
 * `IntelligenceLayer`, the public entry point. It sanitises, decides whether the
-  model should be consulted at all, and applies the deterministic safety guard
-  on the way out.
+  model should be consulted at all, and applies the deterministic safety guards
+  on the way out. Given a toolbox and a client that supports it, the model is
+  consulted through the agent loop in `agent.py` instead of a single call; the
+  guards are the same either way.
 
 Every call is fresh. No conversation state is kept between events: per-item
 accuracy degrades as context accumulates across a long batch run, so
@@ -34,7 +36,7 @@ from __future__ import annotations
 import os
 import threading
 from datetime import datetime, timezone
-from typing import Callable, List, Optional, Protocol
+from typing import Callable, List, Optional, Protocol, Tuple
 
 from app.core.config import (
     GEMINI_SETTINGS,
@@ -44,10 +46,12 @@ from app.core.config import (
     env_flag,
 )
 from app.core.logging import get_logger, log_event
-from app.intelligence.prompts import SYSTEM_PROMPT, build_user_content
+from app.intelligence.agent import AgentToolbox
+from app.intelligence.prompts import AGENT_SYSTEM_PROMPT, SYSTEM_PROMPT, build_user_content
 from app.intelligence.sanitizer import sanitize_customer_note
 from app.intelligence.schemas import (
     MONEY_MOVING_ACTIONS,
+    AgentStep,
     IntelligenceDecision,
     IntelligenceInput,
     LLMRecommendation,
@@ -320,7 +324,16 @@ class IntelligenceLayer:
         self._consecutive_failures = 0
         self._circuit_opened_at: Optional[datetime] = None
 
-    def recommend(self, request: IntelligenceInput) -> IntelligenceDecision:
+    def recommend(
+        self, request: IntelligenceInput, toolbox: Optional[AgentToolbox] = None
+    ) -> IntelligenceDecision:
+        """Recommend an action for one traced payment.
+
+        With a `toolbox`, and a client that has `recommend_with_tools`, the
+        model plans through the agent loop and may look up the payment's
+        status, compliance facts and retry history first. Without one, it is a
+        single call on the tracer output. Everything else is identical.
+        """
         now = request.decided_at or self._clock()
 
         # ------------------------------------------------------------------
@@ -397,15 +410,16 @@ class IntelligenceLayer:
             return self._fail_safe(request, note, report, now, reason="llm_circuit_open")
 
         user_content = build_user_content(request.trace, note)
+        agent_steps: List[AgentStep] = []
         try:
-            recommendation = self._client.recommend(SYSTEM_PROMPT, user_content)
+            recommendation, agent_steps = self._consult(user_content, toolbox)
         except AssertionError:
             raise
         except Exception as exc:  # provider error, validation error, timeout
             self._record_call_failure()
             # The exception text (may carry request/response internals from the
             # SDK or network layer) is logged server-side only. reasoning and
-            # short_circuit_reason reach the dashboard and the audit trail, so
+            # short_circuit_reason reach the API, the web app and the audit trail, so
             # they get a fixed, generic code instead.
             log_event(
                 logger,
@@ -443,7 +457,7 @@ class IntelligenceLayer:
         #    is asked again without the note. If the answer then does not move
         #    money, the note is what moved it, and the case goes to a person.
         elif action in MONEY_MOVING_ACTIONS and note:
-            without_note = self._recommend_without_note(request)
+            without_note = self._recommend_without_note(request, toolbox)
             if without_note is None or without_note not in MONEY_MOVING_ACTIONS:
                 original_action = action
                 override_reason = (
@@ -486,20 +500,30 @@ class IntelligenceLayer:
             untrusted_customer_note=note,
             sanitization=report,
             model=model,
+            agent_steps=agent_steps,
             decided_at=now,
         )
         self._log(decision)
         return decision
 
+    def _consult(
+        self, user_content: str, toolbox: Optional[AgentToolbox]
+    ) -> Tuple[LLMRecommendation, List[AgentStep]]:
+        """One recommendation from the model: through the agent loop when a
+        toolbox is given and the client supports it, otherwise a single call."""
+        run_agent = getattr(self._client, "recommend_with_tools", None)
+        if toolbox is not None and run_agent is not None:
+            result = run_agent(AGENT_SYSTEM_PROMPT, user_content, toolbox)
+            return result.recommendation, list(result.steps)
+        return self._client.recommend(SYSTEM_PROMPT, user_content), []
+
     def _recommend_without_note(
-        self, request: IntelligenceInput
+        self, request: IntelligenceInput, toolbox: Optional[AgentToolbox] = None
     ) -> Optional[RecommendedAction]:
         """The model's action for the same trace with the note left empty, or
-        None if the call failed."""
+        None if the call failed. Uses the agent loop if the main call did."""
         try:
-            result = self._client.recommend(
-                SYSTEM_PROMPT, build_user_content(request.trace, "")
-            )
+            result, _ = self._consult(build_user_content(request.trace, ""), toolbox)
         except AssertionError:
             raise
         except Exception as exc:

@@ -823,7 +823,7 @@ def test_every_blocked_reason_names_its_rule(engine):
     assert len(seen) == 10, "each case must trip a distinct rule"
 
 
-def test_decision_is_serialisable_for_the_dashboard(engine):
+def test_decision_is_serialisable_for_the_trace(engine):
     decision = engine.validate(llm(), context(opted_out=True))
     payload = decision.model_dump(mode="json")
     assert isinstance(payload["rules_evaluated"], list)

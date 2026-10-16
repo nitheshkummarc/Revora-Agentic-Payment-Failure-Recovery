@@ -244,7 +244,7 @@ def run_revora(dataset, failure_rate: float, rows):
         intelligence=IntelligenceLayer(llm_client=StubLLMClient(), clock=clock),
         clock=clock,
         # Deliberately not data/batch_results.json: this benchmark must not
-        # overwrite the run the dashboard reads.
+        # overwrite the committed run the API and the web export read.
         results_path=RESULTS_PATH.parent / "baseline_revora_run.json",
     )
     results = orchestrator.run_batch(

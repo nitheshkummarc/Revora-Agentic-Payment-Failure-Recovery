@@ -20,15 +20,10 @@ htmlcov/
 *.p12
 secrets.json
 
-# Frontend
+# Frontend (web/)
 node_modules/
-frontend/node_modules/
 dist/
-frontend/dist/
-frontend/tsconfig.tsbuildinfo
-# Synced copy of data/batch_results.json -- produced by `npm run sync-data`,
-# never edited by hand. One source of truth for the run.
-frontend/public/batch_results.json
+*.tsbuildinfo
 
 # Benchmark byproduct -- regenerate with `python data/run_baseline.py`.
 data/baseline_revora_run.json

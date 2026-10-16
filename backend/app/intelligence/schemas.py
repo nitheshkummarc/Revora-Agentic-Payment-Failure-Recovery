@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -89,6 +89,19 @@ class IntelligenceInput(StrictModel):
     decided_at: Optional[datetime] = None
 
 
+class AgentStep(StrictModel):
+    """One tool call the agent made while planning, and what it got back.
+
+    Recorded in order so a reviewer can see what the model looked at before
+    proposing an action. The final step is always `propose_action`.
+    """
+
+    step: int = Field(ge=1)
+    tool: str
+    arguments: Dict[str, Any] = Field(default_factory=dict)
+    result: Dict[str, Any] = Field(default_factory=dict)
+
+
 class IntelligenceDecision(StrictModel):
     """The recommendation plus how it was reached.
 
@@ -118,4 +131,7 @@ class IntelligenceDecision(StrictModel):
 
     # The model that actually answered. None whenever `llm_called` is False.
     model: Optional[str] = None
+    # The tool calls made when the recommendation came from the agent loop;
+    # empty for a single-call recommendation or a short-circuit.
+    agent_steps: List[AgentStep] = Field(default_factory=list)
     decided_at: datetime
